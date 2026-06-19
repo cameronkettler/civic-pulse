@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Depends
+import httpx
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from packages.agents.bill_lookup import BillLookupWorkflow
+from packages.agents.bill_lookup.input_resolver import BillInputResolutionError
 from packages.agents.bill_monitoring import BillMonitoringWorkflow
 from packages.db import get_session
 from packages.db.models import Bill, BillMonitoring, GeneratedReport, UserInterest
@@ -19,7 +21,17 @@ class InterestUpdate(BaseModel):
 
 @router.post("/bills/lookup", response_model=BillLookupResponse)
 async def lookup_bill(payload: BillLookupRequest, db: Session = Depends(get_session)):
-    response = await BillLookupWorkflow().run(payload.bill_id)
+    try:
+        response = await BillLookupWorkflow().run(payload.bill_id)
+    except BillInputResolutionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            raise HTTPException(
+                status_code=404,
+                detail="Congress.gov did not find that bill number. Check the bill type, number, and Congress.",
+            ) from exc
+        raise
     bill = upsert_bill(db, response)
     db.add(
         GeneratedReport(

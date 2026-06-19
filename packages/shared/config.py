@@ -3,6 +3,8 @@ from functools import lru_cache
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from packages.shared.topics import DEFAULT_MONITORING_TOPICS
+
 
 class Settings(BaseSettings):
     database_url: str = "sqlite:///./civic_pulse.db"
@@ -11,9 +13,11 @@ class Settings(BaseSettings):
     lobbying_disclosure_api_key: str | None = None
     lobbying_disclosure_base_url: str = "https://lda.gov/api/v1"
     lobbying_api_live: bool = False
-    monitoring_topics: str = (
-        "Artificial Intelligence,Healthcare,Housing,Energy,Defense,Technology,Privacy"
-    )
+    openai_api_key: str | None = None
+    openai_model: str = "gpt-5.4-mini"
+    openai_api_live: bool = False
+    openai_reasoning_effort: str = "low"
+    monitoring_topics: str = DEFAULT_MONITORING_TOPICS
     monitoring_poll_limit: int = 10
     smtp_host: str | None = None
     smtp_port: int = 587
