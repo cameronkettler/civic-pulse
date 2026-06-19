@@ -28,6 +28,18 @@ Configure with `LOBBYING_DISCLOSURE_API_KEY`, `LOBBYING_DISCLOSURE_BASE_URL`, an
 `LOBBYING_API_LIVE=true`. Authenticated requests send `Authorization: Token <key>` and use the
 LDA filings `filing_specific_lobbying_issues` filter.
 
+## OpenAI
+
+`packages.agents.bill_lookup.report_generator.OpenAIReportGenerator` owns optional LLM synthesis
+for bill lookup reports.
+
+- Uses the Responses API to generate structured `generated_summary`, `generated_analysis`,
+  `caveats`, and `confidence` fields from already-retrieved Congress, FEC, and LDA context.
+- Falls back to deterministic template output when OpenAI is disabled or unavailable.
+
+Configure with `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_API_LIVE=true`, and
+`OPENAI_REASONING_EFFORT`.
+
 ## Demo Mode
 
 When API keys are absent, clients return deterministic demo responses. This keeps the repository easy to clone, run, and present during interviews while preserving production boundaries.
