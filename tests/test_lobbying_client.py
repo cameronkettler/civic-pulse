@@ -51,3 +51,5 @@ def test_lobbying_client_sends_lda_token_and_documented_filter(monkeypatch):
         "headers": {"Authorization": "Token test-token"},
         "params": {"filing_specific_lobbying_issues": "AI procurement", "page_size": 5},
     }
+    assert result["registrations"][0]["client_name"] == "Example Client"
+    assert result["registrations"][0]["issue"] == "AI procurement"

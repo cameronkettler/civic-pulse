@@ -5,6 +5,7 @@ from packages.ingestion.congress import CongressClient
 from packages.ingestion.fec import FECClient
 from packages.ingestion.lobbying import LobbyingDisclosureClient
 from packages.shared.config import Settings
+from packages.shared.topics import DEFAULT_MONITORING_TOPICS
 
 
 def test_bill_lookup_workflow_returns_structured_report():
@@ -38,3 +39,43 @@ def test_congress_client_demo_recent_bills_are_classified():
 
     assert len(bills) == 2
     assert all(bill.topic for bill in bills)
+
+
+def test_congress_client_classifies_common_policy_domains():
+    client = CongressClient(Settings(congress_api_key=None))
+
+    assert client.classify_topic("SAVE Act voter registration requirements") == "Elections"
+    assert client.classify_topic("Farm, Food, and National Security Act") == "Agriculture"
+    assert client.classify_topic("Veterans health care access improvement") == "Healthcare"
+    assert client.classify_topic("A bill to recognize a commemorative week") == "Uncategorized"
+
+
+def test_default_monitoring_topics_include_classifier_taxonomy():
+    topics = Settings(monitoring_topics=DEFAULT_MONITORING_TOPICS).topics
+
+    assert "Agriculture" in topics
+    assert "Elections" in topics
+    assert "Transportation" in topics
+    assert "Veterans" in topics
+
+
+def test_bill_lookup_workflow_extracts_unique_stakeholder_names():
+    workflow = BillLookupWorkflow(settings=Settings(openai_api_live=False))
+
+    insights = workflow._stakeholder_insights(
+        [
+            {"client": {"name": "American College of Physicians"}},
+            {"client_name": "American College of Physicians"},
+            {
+                "registrant": {"name": "National Affordable Housing Management Association"},
+                "issue": "Housing affordability",
+            },
+            {},
+        ]
+    )
+
+    assert [item.name for item in insights] == [
+        "American College of Physicians",
+        "National Affordable Housing Management Association",
+    ]
+    assert insights[1].context == "Issue area: Housing affordability"
