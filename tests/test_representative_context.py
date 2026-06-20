@@ -65,8 +65,6 @@ def test_representative_cosponsor_matching_handles_weber_name_and_bioguide_varia
     assert routes.representative_is_cosponsor(representative, cosponsors)
 
 
-<<<<<<< Updated upstream
-=======
 def test_representative_position_queries_are_neutral_and_stance_oriented():
     queries = routes.representative_position_queries(
         rep_name="Weber, Randy K. Sr.",
@@ -88,7 +86,6 @@ def test_representative_position_queries_are_neutral_and_stance_oriented():
     assert all("proof of citizenship" not in query for query in queries)
 
 
->>>>>>> Stashed changes
 def test_representative_position_detail_appends_grounded_public_reason(monkeypatch):
     async def fake_search(bill: dict[str, object], representative: RepresentativeRecord):
         return [

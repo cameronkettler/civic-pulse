@@ -522,16 +522,7 @@ async def search_representative_position(
     bill_id = str(bill.get("congress_bill_id") or "")
     title = str(bill.get("title") or "")
     rep_name = representative.name
-    bill_number = bill_id.rsplit("-", 1)[0] if bill_id else ""
-    queries = [
-        f'"{rep_name}" "{bill_id}"',
-        f'"{rep_name}" "{bill_number}"',
-        f'"{rep_name}" "{title}"',
-        f'"{rep_name}" "{title}" "voter suppression"',
-        f'"{rep_name}" "{title}" disenfranchise',
-        f'"{rep_name}" "{title}" "proof of citizenship"',
-        f'"{rep_name}" "{title}" support oppose',
-    ]
+    queries = representative_position_queries(rep_name=rep_name, bill_id=bill_id, title=title)
 
     client = SerpApiClient()
     results: list[SearchResult] = []
@@ -555,14 +546,11 @@ async def search_representative_position(
     return ranked_position_search_results(results)[: get_settings().rep_position_search_results]
 
 
-<<<<<<< Updated upstream
-=======
 def representative_position_queries(*, rep_name: str, bill_id: str, title: str) -> list[str]:
     bill_number = bill_id.rsplit("-", 1)[0] if bill_id else ""
     queries = [
         f'"{rep_name}" "{title}" supports',
         f'"{rep_name}" "{title}" opposes',
-        f'"{rep_name}" "{title}" position statement',
     ]
     if bill_id:
         queries.append(f'"{rep_name}" "{bill_id}"')
@@ -603,7 +591,6 @@ def result_mentions_cosponsorship(item: SearchResult) -> bool:
     return any(term in text for term in ("cosponsor", "cosponsored", "co-sponsor", "co-sponsored"))
 
 
->>>>>>> Stashed changes
 def ranked_position_search_results(results: list[SearchResult]) -> list[SearchResult]:
     def score(item: SearchResult) -> int:
         text = position_search_text(item)
