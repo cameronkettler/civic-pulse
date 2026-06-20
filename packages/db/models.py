@@ -85,6 +85,7 @@ class UserProfile(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
     street_address: Mapped[str] = mapped_column(Text, default="")
+    address_line_2: Mapped[str] = mapped_column(Text, default="")
     city: Mapped[str] = mapped_column(String(120), default="")
     state: Mapped[str] = mapped_column(String(2), default="")
     zip_code: Mapped[str] = mapped_column(String(10), default="")

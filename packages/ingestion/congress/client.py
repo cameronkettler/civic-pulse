@@ -255,6 +255,25 @@ class CongressClient:
             return congress, bill_type, number
         return "119", parts[0], parts[-1]
 
+    def _representative_from_member(self, member: dict[str, Any], chamber: str) -> RepresentativeRecord:
+        terms = member.get("terms", {}).get("item", []) if isinstance(member.get("terms"), dict) else []
+        latest_term = terms[-1] if terms else {}
+        return RepresentativeRecord(
+            name=member.get("directOrderName") or member.get("name") or member.get("invertedOrderName") or "Unknown member",
+            chamber=chamber,
+            party=member.get("partyName") or latest_term.get("partyName") or "Unknown",
+            state=member.get("state") or latest_term.get("stateCode") or "",
+            district=str(member.get("district") or latest_term.get("district") or "") or None,
+            bioguide_id=member.get("bioguideId"),
+            official_url=member.get("officialUrl"),
+        )
+
+    def _member_chamber(self, member: dict[str, Any]) -> str:
+        terms = member.get("terms", {}).get("item", []) if isinstance(member.get("terms"), dict) else []
+        latest = terms[-1] if terms else {}
+        chamber = latest.get("chamber", "")
+        return "Senate" if "Senate" in chamber else "House"
+
     def _demo_bill(self, bill_id: str) -> BillRecord:
         title = "Responsible Artificial Intelligence in Public Services Act"
         topic = self.classify_topic(title)

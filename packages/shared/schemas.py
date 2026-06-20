@@ -44,6 +44,7 @@ class RepresentativeBillSignal(BaseModel):
 
 class UserProfileResponse(BaseModel):
     street_address: str = ""
+    address_line_2: str = ""
     city: str = ""
     state: str = ""
     zip_code: str = ""
