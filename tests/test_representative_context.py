@@ -70,20 +70,34 @@ def test_representative_position_queries_are_neutral_and_stance_oriented():
         rep_name="Weber, Randy K. Sr.",
         bill_id="hr-22-119",
         title="SAVE Act",
+        official_url="https://weber.house.gov",
     )
 
     assert queries == [
-        '"Weber, Randy K. Sr." "SAVE Act" cosponsor',
-        '"Weber, Randy K. Sr." "SAVE Act" cosponsored',
-        '"Weber, Randy K. Sr." "SAVE Act" supports',
-        '"Weber, Randy K. Sr." "SAVE Act" opposes',
-        '"Weber, Randy K. Sr." "SAVE Act" position statement',
-        '"Weber, Randy K. Sr." "hr-22-119"',
-        '"Weber, Randy K. Sr." "hr-22"',
-        '"Weber, Randy K. Sr." "hr-22" cosponsor',
+        'site:weber.house.gov "SAVE Act"',
+        '"Weber, Randy K. Sr." "SAVE Act" statement',
+        '"Weber, Randy K. Sr." "SAVE Act" local news',
+        '"Weber, Randy K. Sr." "hr-22-119" statement',
+        '"Weber, Randy K. Sr." "hr-22" statement',
     ]
+    assert all(" quote" not in query for query in queries)
+    assert all(" press release" not in query for query in queries)
+    assert all(" interview" not in query for query in queries)
+    assert all(" supports" not in query for query in queries)
+    assert all(" opposes" not in query for query in queries)
     assert all("voter suppression" not in query for query in queries)
     assert all("proof of citizenship" not in query for query in queries)
+
+
+def test_representative_position_queries_work_without_official_url():
+    queries = routes.representative_position_queries(
+        rep_name="Crockett, Jasmine",
+        bill_id="hr-8800-119",
+        title="National Defense Authorization Act for Fiscal Year 2027",
+    )
+
+    assert queries[0] == '"Crockett, Jasmine" "National Defense Authorization Act for Fiscal Year 2027" statement'
+    assert all(not query.startswith("site:") for query in queries)
 
 
 def test_representative_position_detail_appends_grounded_public_reason(monkeypatch):

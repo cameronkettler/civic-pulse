@@ -1,4 +1,5 @@
 import logging
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -522,7 +523,12 @@ async def search_representative_position(
     bill_id = str(bill.get("congress_bill_id") or "")
     title = str(bill.get("title") or "")
     rep_name = representative.name
-    queries = representative_position_queries(rep_name=rep_name, bill_id=bill_id, title=title)
+    queries = representative_position_queries(
+        rep_name=rep_name,
+        bill_id=bill_id,
+        title=title,
+        official_url=representative.official_url,
+    )
 
     client = SerpApiClient()
     results: list[SearchResult] = []
@@ -546,18 +552,36 @@ async def search_representative_position(
     return ranked_position_search_results(results)[: get_settings().rep_position_search_results]
 
 
-def representative_position_queries(*, rep_name: str, bill_id: str, title: str) -> list[str]:
+def representative_position_queries(
+    *,
+    rep_name: str,
+    bill_id: str,
+    title: str,
+    official_url: str | None = None,
+) -> list[str]:
     bill_number = bill_id.rsplit("-", 1)[0] if bill_id else ""
+    official_domain = official_site_domain(official_url)
     queries = [
-        f'"{rep_name}" "{title}" supports',
-        f'"{rep_name}" "{title}" opposes',
+        f'"{rep_name}" "{title}" statement',
+        f'"{rep_name}" "{title}" local news',
     ]
+    if official_domain:
+        queries.insert(0, f'site:{official_domain} "{title}"')
     if bill_id:
-        queries.append(f'"{rep_name}" "{bill_id}"')
+        queries.append(f'"{rep_name}" "{bill_id}" statement')
     if bill_number and bill_number != bill_id:
-        queries.append(f'"{rep_name}" "{bill_number}"')
-        queries.append(f'"{rep_name}" "{bill_number}" cosponsor')
+        queries.append(f'"{rep_name}" "{bill_number}" statement')
     return [query for query in queries if '""' not in query]
+
+
+def official_site_domain(official_url: str | None) -> str:
+    if not official_url:
+        return ""
+    parsed = urlparse(official_url)
+    domain = parsed.netloc or parsed.path.split("/", 1)[0]
+    if not domain:
+        return ""
+    return domain.removeprefix("www.")
 
 
 def public_reported_cosponsor_signal(
