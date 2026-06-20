@@ -295,8 +295,8 @@ async def enrich_representative_position_signal(
     if not reason or not reason.get("reason"):
         return (
             public_search_reviewed_signal(signal),
-            public_search_reviewed_detail(detail, search_results),
-            fallback_position_sources(search_results),
+            public_search_reviewed_detail(detail),
+            fallback_position_sources(search_results, representative),
         )
 
     enriched_signal = public_position_signal(signal, str(reason.get("position", "")))
@@ -326,24 +326,27 @@ def formatted_position_sources(
         item = allowed_by_url.get(url)
         if not item:
             continue
-        sources.append(SourceReference(label=source_label(item), url=item.link, confidence="medium"))
+        sources.append(source_reference(item, representative, confidence="medium"))
         if len(sources) == 2:
             break
 
     if not sources and allowed:
-        sources.append(SourceReference(label=source_label(allowed[0]), url=allowed[0].link, confidence="low"))
+        sources.append(source_reference(allowed[0], representative, confidence="low"))
     if not sources and len(search_results) == 1 and source_quality_score(search_results[0]) >= 0:
-        sources.append(
-            SourceReference(label=source_label(search_results[0]), url=search_results[0].link, confidence="low")
-        )
+        sources.append(source_reference(search_results[0], representative, confidence="low"))
     return sources
 
 
-def fallback_position_sources(search_results: list[SearchResult]) -> list[SourceReference]:
+def fallback_position_sources(
+    search_results: list[SearchResult],
+    representative: RepresentativeRecord,
+) -> list[SourceReference]:
+    candidates = relevant_position_sources(search_results, representative) or [
+        item for item in search_results if source_quality_score(item) >= 0
+    ]
     return [
-        SourceReference(label=source_label(item), url=item.link, confidence="low")
-        for item in search_results[:2]
-        if source_quality_score(item) >= 0
+        source_reference(item, representative, confidence="low")
+        for item in candidates[:2]
     ]
 
 
@@ -370,9 +373,25 @@ def result_mentions_representative(item: SearchResult, rep_terms: set[str]) -> b
     return any(term in text for term in rep_terms)
 
 
+def source_reference(
+    item: SearchResult,
+    representative: RepresentativeRecord,
+    *,
+    confidence: str,
+) -> SourceReference:
+    return SourceReference(
+        label=source_label(item),
+        url=source_url(item, representative),
+        confidence=confidence,
+        description=source_description(item),
+    )
+
+
 def source_label(item: SearchResult) -> str:
     text = position_search_text(item)
     source = item.source or item.link
+    if "lcv.org" in text:
+        return "LCV vote summary"
     if "congress.gov" in text:
         return "Congress.gov bill page"
     if "tiktok.com" in text:
@@ -388,6 +407,34 @@ def source_label(item: SearchResult) -> str:
     return compact_source_title(item.title or source)
 
 
+def source_url(item: SearchResult, representative: RepresentativeRecord) -> str:
+    text = position_search_text(item)
+    if "lcv.org/roll-call-vote" in text:
+        return f"https://www.lcv.org/moc/{representative_slug(representative.name)}/"
+    return item.link
+
+
+def source_description(item: SearchResult) -> str:
+    text = position_search_text(item)
+    if "lcv.org" in text:
+        return "Advocacy-group vote summary or member scorecard context for this vote."
+    if "congress.gov" in text:
+        return "Official bill page with text, actions, sponsors, and legislative status."
+    if "tiktok.com" in text or "instagram.com" in text or "facebook.com" in text:
+        return "Public social-media source surfaced by search; useful as context, not an official record."
+    if ".gov" in text:
+        return "Official public source from a government domain."
+    return "Public search result used as context for the representative's position."
+
+
+def representative_slug(name: str) -> str:
+    if "," in name:
+        last, first = [part.strip() for part in name.split(",", 1)]
+        name = f"{first} {last}"
+    parts = [part.strip().casefold() for part in name.split() if part.strip()]
+    return "-".join(parts)
+
+
 def compact_source_title(title: str) -> str:
     cleaned = " ".join(title.split())
     if len(cleaned) <= 90:
@@ -401,14 +448,10 @@ def public_search_reviewed_signal(existing_signal: str) -> str:
     return existing_signal
 
 
-def public_search_reviewed_detail(detail: str, search_results: list[SearchResult]) -> str:
-    top_results = search_results[:2]
-    if not top_results:
-        return detail
-    result_text = "; ".join(f"{item.title} ({item.link})" for item in top_results)
+def public_search_reviewed_detail(detail: str) -> str:
     return (
-        f"{detail} Public search surfaced related results, but the reviewed snippets did not "
-        f"clearly establish support or criticism. Top result{'s' if len(top_results) > 1 else ''}: {result_text}"
+        f"{detail} Public search surfaced related sources for this bill and representative; "
+        "review the source links below for public context."
     )
 
 
