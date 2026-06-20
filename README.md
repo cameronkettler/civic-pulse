@@ -8,6 +8,7 @@ Civic Pulse is an agentic civic intelligence platform for understanding and moni
 - External API integration boundaries
 - Event-oriented ingestion jobs
 - PostgreSQL-backed domain models
+- Email/password login with per-user monitoring topics
 - Email notification composition
 - Full-stack Docker development
 - Documentation for architecture, APIs, and data flow
@@ -53,11 +54,15 @@ The app runs with deterministic demo data when external API keys are not configu
 ## API Highlights
 
 - `GET /health` returns service status.
+- `POST /api/auth/register` creates an account.
+- `POST /api/auth/login` creates a bearer session.
+- `GET /api/auth/me` returns the signed-in account.
 - `POST /api/bills/lookup` runs the bill intelligence workflow.
 - `GET /api/monitoring/recent` lists recent monitored bills.
-- `POST /api/monitoring/poll` polls for newly introduced bills and queues notifications.
-- `GET /api/interests` lists enabled monitoring topics.
-- `PATCH /api/interests/{topic}` toggles a topic.
+- `POST /api/monitoring/poll` polls for newly introduced bills using the signed-in user's topics.
+- `POST /api/jobs/poll-new-bills` runs the scheduled environment-level poll job.
+- `GET /api/interests` lists the signed-in user's monitoring topics.
+- `PATCH /api/interests/{topic}` toggles one of the signed-in user's topics.
 
 ## Development
 
@@ -105,4 +110,4 @@ Supported commands are `up`, `down`, `restart`, `status`, and `logs`.
 
 ## Production Notes
 
-This repository is intentionally modular. Provider clients are isolated under `packages/ingestion`, the workflows live under `packages/agents`, persistence is under `packages/db`, and the API only coordinates use cases. The next production steps would be adding migrations, Redis/Celery workers, user authentication, durable notification queues, and stricter source citation storage.
+This repository is intentionally modular. Provider clients are isolated under `packages/ingestion`, the workflows live under `packages/agents`, persistence is under `packages/db`, and the API only coordinates use cases. See `docs/deployment/free-tier.md` for a Vercel + Render + Supabase + GitHub Actions deployment path. The next production steps would be adding migrations, Redis/Celery workers, durable notification queues, and stricter source citation storage.

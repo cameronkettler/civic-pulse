@@ -10,10 +10,17 @@ async def poll_new_bills(
     db: Session,
     workflow: BillMonitoringWorkflow | None = None,
     congress_client: CongressClient | None = None,
+    monitored_topics: set[str] | None = None,
+    email_to: str | None = None,
 ) -> dict[str, int]:
     settings = get_settings()
     congress = congress_client or CongressClient(settings)
-    monitor = workflow or BillMonitoringWorkflow(congress_client=congress, settings=settings)
+    monitor = workflow or BillMonitoringWorkflow(
+        congress_client=congress,
+        settings=settings,
+        monitored_topics=monitored_topics,
+        email_to=email_to,
+    )
     candidates = await congress.list_recent_bills(limit=settings.monitoring_poll_limit)
 
     discovered = 0

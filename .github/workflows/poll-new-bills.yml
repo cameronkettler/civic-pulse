@@ -1,0 +1,19 @@
+name: Poll New Bills
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 13 * * *"
+
+jobs:
+  poll:
+    name: Trigger hosted poll job
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Poll Civic Pulse API
+        run: |
+          curl --fail --show-error --silent \
+            --request POST \
+            --header "X-Job-Token: ${{ secrets.CIVIC_PULSE_JOB_TOKEN }}" \
+            "${{ secrets.CIVIC_PULSE_API_BASE_URL }}/api/jobs/poll-new-bills"
