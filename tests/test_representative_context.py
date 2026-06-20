@@ -174,7 +174,7 @@ def test_representative_position_signal_reports_public_search_when_reason_unclea
     )
 
     assert signal == "Public search reviewed"
-    assert "Top result" in detail
+    assert "review the source links below" in detail
     assert sources[0].url == "https://example.com/coverage"
 
 
@@ -212,3 +212,28 @@ def test_formatted_position_sources_filters_unrelated_sources():
 
     assert sources[0].url == "https://example.com/crockett"
     assert all("RepJohnJames" not in str(source.url) for source in sources)
+
+
+def test_lcv_roll_call_source_links_to_member_scorecard():
+    representative = RepresentativeRecord(
+        name="Crockett, Jasmine",
+        chamber="House",
+        party="Democratic",
+        state="TX",
+        district="30",
+        bioguide_id="C001130",
+    )
+    source = routes.source_reference(
+        SearchResult(
+            title="Requiring Proof of Citizenship to Register for Federal Elections",
+            link="https://www.lcv.org/roll-call-vote/requiring-proof-of-citizenship-to-register-for-federal-elections/",
+            snippet="Vote summary for H.R. 22.",
+            source="LCV",
+        ),
+        representative,
+        confidence="low",
+    )
+
+    assert source.label == "LCV vote summary"
+    assert source.url == "https://www.lcv.org/moc/jasmine-crockett/"
+    assert "vote summary" in source.description

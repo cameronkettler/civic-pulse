@@ -60,6 +60,7 @@ type SourceReference = {
   label: string;
   url?: string | null;
   confidence?: string;
+  description?: string;
 };
 
 type StakeholderInsight = {
@@ -804,6 +805,9 @@ function RepresentativeContext({ signals }: { signals: RepresentativeBillSignal[
                       ) : (
                         <span className="text-slate-600">{source.label}</span>
                       )}
+                      {source.description ? (
+                        <p className="text-slate-500">{source.description}</p>
+                      ) : null}
                     </li>
                   ))}
                 </ul>

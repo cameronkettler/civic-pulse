@@ -8,6 +8,7 @@ class SourceReference(BaseModel):
     label: str
     url: str | None = None
     confidence: str = "medium"
+    description: str = ""
 
 
 class BillRecord(BaseModel):
