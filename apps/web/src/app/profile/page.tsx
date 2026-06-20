@@ -256,7 +256,7 @@ export default function ProfilePage() {
                     </p>
                   </div>
                   <span className={`rounded border px-2 py-1 text-xs font-semibold ${partyColor(representative.party)}`}>
-                    {representative.party || "Unknown"}
+                    {partyLabel(representative.party)}
                   </span>
                 </div>
               </article>
@@ -276,8 +276,17 @@ function authHeaders(token: string) {
 }
 
 function partyColor(party: string) {
-  if (party === "D" || party.toLowerCase().includes("democrat")) return "border-blue-200 bg-blue-50 text-blue-700";
-  if (party === "R" || party.toLowerCase().includes("republican")) return "border-red-200 bg-red-50 text-red-700";
-  if (party === "I" || party.toLowerCase().includes("independent")) return "border-violet-200 bg-violet-50 text-violet-700";
+  const label = partyLabel(party);
+  if (label === "Democrat") return "border-blue-200 bg-blue-50 text-blue-700";
+  if (label === "Republican") return "border-red-200 bg-red-50 text-red-700";
+  if (label === "Independent") return "border-violet-200 bg-violet-50 text-violet-700";
   return "border-slate-200 bg-white text-slate-600";
+}
+
+function partyLabel(party: string) {
+  const normalized = party.trim().toLowerCase();
+  if (party === "D" || normalized.includes("democrat")) return "Democrat";
+  if (party === "R" || normalized.includes("republican")) return "Republican";
+  if (party === "I" || normalized.includes("independent")) return "Independent";
+  return party || "Unknown";
 }

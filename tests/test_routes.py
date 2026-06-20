@@ -36,6 +36,15 @@ def test_recent_bills_returns_warning_without_live_feed(monkeypatch):
     assert response.warning == "No cached bills yet. Run polling to populate recent bills."
 
 
+def test_hot_topics_returns_searchable_bill_prompts():
+    response = routes.hot_topics(_EmptyDb())
+
+    assert response.items
+    assert response.items[0].congress_bill_id == "hr-8800-119"
+    assert all(item.title for item in response.items)
+    assert all(item.reason for item in response.items)
+
+
 class _CongressFailureWorkflow:
     async def run(self, bill_id: str):
         raise ProviderLookupError("Congress.gov")

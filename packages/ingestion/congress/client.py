@@ -169,6 +169,35 @@ class CongressClient:
                     offset += 250
         return sorted(votes, key=lambda vote: str(vote.get("startDate", "")), reverse=True)
 
+    async def list_senate_votes_for_bill(self, bill_id: str) -> list[dict[str, Any]]:
+        if not self.settings.congress_api_key:
+            return []
+
+        congress, bill_type, number = self._parse_bill_id(bill_id)
+        bill_type = bill_type.upper()
+        votes: list[dict[str, Any]] = []
+        async with httpx.AsyncClient(timeout=httpx.Timeout(self.settings.congress_api_timeout_seconds)) as client:
+            for session in ("2", "1"):
+                offset = 0
+                while offset < 1000:
+                    url = f"{self.base_url}/senate-vote/{congress}/{session}"
+                    response = await client.get(
+                        url,
+                        params={**self._request_params(), "limit": 250, "offset": offset},
+                    )
+                    response.raise_for_status()
+                    page = [self._normalize_senate_vote(item) for item in self._senate_vote_items(response.json())]
+                    votes.extend(
+                        vote
+                        for vote in page
+                        if str(vote.get("legislationType", "")).upper() == bill_type
+                        and str(vote.get("legislationNumber", "")) == number
+                    )
+                    if len(page) < 250:
+                        break
+                    offset += 250
+        return sorted(votes, key=lambda vote: str(vote.get("startDate", "")), reverse=True)
+
     async def get_house_member_vote(self, vote: dict[str, Any], representative: RepresentativeRecord) -> dict[str, Any] | None:
         if not self.settings.congress_api_key:
             return None
@@ -189,6 +218,33 @@ class CongressClient:
             if self._vote_matches_representative(item, representative):
                 return {
                     "vote_cast": item.get("voteCast", ""),
+                    "vote_question": payload.get("voteQuestion") or vote.get("voteQuestion", ""),
+                    "result": payload.get("result") or vote.get("result", ""),
+                    "roll_call_number": payload.get("rollCallNumber") or vote_number,
+                    "start_date": payload.get("startDate") or vote.get("startDate", ""),
+                }
+        return None
+
+    async def get_senate_member_vote(self, vote: dict[str, Any], representative: RepresentativeRecord) -> dict[str, Any] | None:
+        if not self.settings.congress_api_key:
+            return None
+
+        congress = str(vote.get("congress", ""))
+        session = self._vote_session(vote)
+        vote_number = self._vote_roll_call_number(vote)
+        if not congress or not session or not vote_number:
+            return None
+
+        url = f"{self.base_url}/senate-vote/{congress}/{session}/{vote_number}/members"
+        async with httpx.AsyncClient(timeout=httpx.Timeout(self.settings.congress_api_timeout_seconds)) as client:
+            response = await client.get(url, params={**self._request_params(), "limit": 250})
+            response.raise_for_status()
+            payload = self._senate_member_vote_payload(response.json())
+
+        for item in self._senate_member_vote_items(payload):
+            if self._vote_matches_representative(item, representative):
+                return {
+                    "vote_cast": item.get("voteCast") or item.get("vote") or item.get("position", ""),
                     "vote_question": payload.get("voteQuestion") or vote.get("voteQuestion", ""),
                     "result": payload.get("result") or vote.get("result", ""),
                     "roll_call_number": payload.get("rollCallNumber") or vote_number,
@@ -330,6 +386,20 @@ class CongressClient:
             return []
         return [self._unwrap_item(item, "houseRollCallVote") for item in raw_items]
 
+    def _senate_vote_items(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        raw_items = (
+            payload.get("senateRollCallVotes")
+            or payload.get("senateVotes")
+            or payload.get("rollCallVotes")
+            or payload.get("votes")
+            or []
+        )
+        if isinstance(raw_items, dict):
+            raw_items = raw_items.get("item", [])
+        if not isinstance(raw_items, list):
+            return []
+        return [self._unwrap_item(item, "senateRollCallVote") for item in raw_items]
+
     def _cosponsor_items(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         raw_items = payload.get("cosponsors", [])
         if isinstance(raw_items, dict):
@@ -345,6 +415,20 @@ class CongressClient:
         if not isinstance(raw_items, list):
             return []
         return [self._unwrap_item(item, "item") for item in raw_items]
+
+    def _senate_member_vote_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        for key in ("senateRollCallVoteMemberVotes", "senateRollCallVote", "rollCallVote"):
+            if isinstance(payload.get(key), dict):
+                return payload[key]
+        return payload
+
+    def _senate_member_vote_items(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        raw_items = payload.get("results") or payload.get("members") or payload.get("votes") or []
+        if isinstance(raw_items, dict):
+            raw_items = raw_items.get("item", [])
+        if not isinstance(raw_items, list):
+            return []
+        return [self._unwrap_item(self._unwrap_item(item, "member"), "item") for item in raw_items]
 
     def _unwrap_item(self, item: Any, key: str) -> dict[str, Any]:
         if isinstance(item, dict) and isinstance(item.get(key), dict):
@@ -377,6 +461,21 @@ class CongressClient:
             normalized["legislationNumber"] = str(normalized["legislationNumber"])
         return normalized
 
+    def _normalize_senate_vote(self, vote: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(vote)
+        if "sessionNumber" not in normalized and self._vote_session(normalized):
+            normalized["sessionNumber"] = self._vote_session(normalized)
+        if "rollCallNumber" not in normalized and self._vote_roll_call_number(normalized):
+            normalized["rollCallNumber"] = self._vote_roll_call_number(normalized)
+        legislation = normalized.get("legislation") if isinstance(normalized.get("legislation"), dict) else {}
+        if "legislationType" not in normalized and legislation.get("type"):
+            normalized["legislationType"] = legislation["type"]
+        if "legislationNumber" not in normalized and legislation.get("number"):
+            normalized["legislationNumber"] = legislation["number"]
+        if "legislationNumber" in normalized:
+            normalized["legislationNumber"] = str(normalized["legislationNumber"])
+        return normalized
+
     def _vote_matches_representative(
         self,
         vote_item: dict[str, Any],
@@ -387,11 +486,18 @@ class CongressClient:
 
         vote_name = " ".join(
             part
-            for part in [str(vote_item.get("firstName", "")), str(vote_item.get("lastName", ""))]
+            for part in [
+                str(vote_item.get("firstName", "")),
+                str(vote_item.get("lastName", "") or vote_item.get("name", "")),
+            ]
             if part
         ).casefold()
         rep_name = representative.name.casefold()
-        return bool(vote_name and (vote_name in rep_name or rep_name in vote_name))
+        if vote_name and (vote_name in rep_name or rep_name in vote_name):
+            return True
+        vote_parts = {part.strip(".,").casefold() for part in vote_name.split() if len(part.strip(".,")) > 1}
+        rep_parts = {part.strip(".,").casefold() for part in rep_name.replace(",", " ").split() if len(part.strip(".,")) > 1}
+        return bool(vote_parts and vote_parts.issubset(rep_parts))
 
     def _demo_bill(self, bill_id: str) -> BillRecord:
         title = "Responsible Artificial Intelligence in Public Services Act"

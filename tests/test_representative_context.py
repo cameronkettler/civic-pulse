@@ -2,7 +2,7 @@ import asyncio
 
 from apps.api.app.api import routes
 from packages.ingestion.search import SearchResult
-from packages.shared.schemas import RepresentativeRecord
+from packages.shared.schemas import BillRecord, RepresentativeRecord
 
 
 def test_representative_vote_signal_reports_nay_vote(monkeypatch):
@@ -46,6 +46,47 @@ def test_representative_vote_signal_reports_nay_vote(monkeypatch):
     assert "voted Nay" in signal[1]
 
 
+def test_representative_vote_signal_reports_senate_vote(monkeypatch):
+    async def fake_senate_member_vote(vote: dict[str, object], representative: RepresentativeRecord):
+        return {
+            "vote_cast": "Yea",
+            "vote_question": "On Passage",
+            "result": "Passed",
+            "roll_call_number": "22",
+        }
+
+    monkeypatch.setattr(routes, "safe_senate_member_vote", fake_senate_member_vote)
+    representative = RepresentativeRecord(
+        name="Cruz, Ted",
+        chamber="Senate",
+        party="Republican",
+        state="TX",
+        bioguide_id="C001098",
+    )
+
+    signal = asyncio.run(
+        routes.representative_vote_signal(
+            "s-5-119",
+            representative,
+            [],
+            [
+                {
+                    "congress": "119",
+                    "sessionNumber": "1",
+                    "rollCallNumber": "22",
+                    "voteQuestion": "On Passage",
+                    "result": "Passed",
+                    "startDate": "2025-01-20T12:00:00-04:00",
+                }
+            ],
+        )
+    )
+
+    assert signal is not None
+    assert signal[0] == "Voted for"
+    assert "The Senate vote result was Passed" in signal[1]
+
+
 def test_representative_cosponsor_matching_handles_weber_name_and_bioguide_variants():
     representative = RepresentativeRecord(
         name="Weber, Randy K. Sr.",
@@ -63,6 +104,52 @@ def test_representative_cosponsor_matching_handles_weber_name_and_bioguide_varia
     ]
 
     assert routes.representative_is_cosponsor(representative, cosponsors)
+
+
+def test_representative_name_matching_handles_first_last_and_suffixes():
+    assert routes.names_refer_to_same_person("Weber, Randy K. Sr.", "Randy Weber")
+    assert routes.names_refer_to_same_person("Cruz, Ted", "Ted Cruz")
+    assert not routes.names_refer_to_same_person("Cruz, Ted", "John Cornyn")
+
+
+def test_representative_signal_for_bill_can_evaluate_typed_senator_name(monkeypatch):
+    async def fake_search(bill: dict[str, object], representative: RepresentativeRecord):
+        return []
+
+    class FakeReportGenerator:
+        async def generate_representative_position_reason(self, **_: object):
+            return None
+
+    monkeypatch.setattr(routes, "search_representative_position", fake_search)
+    monkeypatch.setattr(routes, "OpenAIReportGenerator", FakeReportGenerator)
+    representative = RepresentativeRecord(
+        name="Cruz, Ted",
+        chamber="Senate",
+        party="Republican",
+        state="TX",
+        bioguide_id="C001098",
+    )
+    bill = BillRecord(
+        congress_bill_id="sres-1-119",
+        title="A Senate resolution",
+        summary="A resolution.",
+        sponsor="Sen. Cruz, Ted [R-TX]",
+        latest_action="Introduced.",
+        status="introduced",
+        topic="Government Operations",
+    )
+
+    signal = asyncio.run(
+        routes.representative_signal_for_bill(
+            bill=bill,
+            representative=representative,
+            cosponsors=[],
+            house_votes=[],
+        )
+    )
+
+    assert signal.signal == "Sponsor"
+    assert signal.representative.chamber == "Senate"
 
 
 def test_representative_position_queries_are_neutral_and_stance_oriented():

@@ -98,6 +98,18 @@ class MonitoringRecentResponse(BaseModel):
     warning: str | None = None
 
 
+class HotTopicBill(BaseModel):
+    congress_bill_id: str
+    title: str
+    topic: str
+    reason: str
+    year: int
+
+
+class HotTopicsResponse(BaseModel):
+    items: list[HotTopicBill]
+
+
 class NotificationPayload(BaseModel):
     recipient: str
     subject: str

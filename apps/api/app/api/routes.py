@@ -27,8 +27,11 @@ from packages.ingestion.search import SearchResult, SerpApiClient
 from packages.jobs.poll_new_bills import poll_new_bills
 from packages.shared.config import get_settings
 from packages.shared.schemas import (
+    BillRecord,
     BillLookupRequest,
     BillLookupResponse,
+    HotTopicBill,
+    HotTopicsResponse,
     MonitoringBill,
     MonitoringRecentResponse,
     RepresentativeBillSignal,
@@ -41,9 +44,67 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+HOT_TOPIC_BILLS = [
+    HotTopicBill(
+        congress_bill_id="hr-8800-119",
+        title="National Defense Authorization Act for Fiscal Year 2027",
+        topic="Defense",
+        reason="Annual defense-policy vehicle with military, national security, and federal contracting stakes.",
+        year=2026,
+    ),
+    HotTopicBill(
+        congress_bill_id="hr-7148-119",
+        title="Consolidated Appropriations Act, 2026",
+        topic="Tax & Budget",
+        reason="Government funding package that affects agency budgets, programs, and national spending priorities.",
+        year=2026,
+    ),
+    HotTopicBill(
+        congress_bill_id="hr-22-119",
+        title="SAVE Act",
+        topic="Elections",
+        reason="High-profile election-administration bill centered on documentary proof of citizenship for voter registration.",
+        year=2025,
+    ),
+    HotTopicBill(
+        congress_bill_id="hr-1-119",
+        title="One Big Beautiful Bill Act",
+        topic="Tax & Budget",
+        reason="Major reconciliation law tied to taxes, spending, border security, energy, and other national policy fights.",
+        year=2025,
+    ),
+    HotTopicBill(
+        congress_bill_id="s-1582-119",
+        title="GENIUS Act",
+        topic="Financial Regulation",
+        reason="Nationally watched digital-asset and stablecoin regulation package.",
+        year=2025,
+    ),
+    HotTopicBill(
+        congress_bill_id="hr-4405-119",
+        title="Epstein Files Transparency Act",
+        topic="Government Operations",
+        reason="Transparency bill with unusually broad public attention and accountability implications.",
+        year=2025,
+    ),
+    HotTopicBill(
+        congress_bill_id="s-5-119",
+        title="Laken Riley Act",
+        topic="Immigration",
+        reason="Prominent immigration and criminal-enforcement law from the opening weeks of the 119th Congress.",
+        year=2025,
+    ),
+]
+
+
 class AuthRequest(BaseModel):
     email: str
     password: str
+    street_address: str = ""
+    address_line_2: str = ""
+    city: str = ""
+    state: str = ""
+    zip_code: str = ""
 
 
 class AuthResponse(BaseModel):
@@ -63,18 +124,46 @@ class ProfileLocationRequest(BaseModel):
     zip_code: str
 
 
+class RepresentativeContextRequest(BaseModel):
+    bill: BillRecord
+    representative_name: str
+
+
 @router.post("/auth/register", response_model=AuthResponse)
-def register(payload: AuthRequest, db: Session = Depends(get_session)):
+async def register(payload: AuthRequest, db: Session = Depends(get_session)):
     email = normalize_email(payload.email)
     if len(payload.password) < 8:
         raise HTTPException(status_code=422, detail="Password must be at least 8 characters.")
     if db.query(User).filter(User.email == email).one_or_none() is not None:
         raise HTTPException(status_code=409, detail="An account with that email already exists.")
 
+    resolved_location = None
+    if registration_includes_location(payload):
+        try:
+            resolved_location = await CensusGeocoderClient().resolve_location(
+                street_address=payload.street_address,
+                address_line_2=payload.address_line_2,
+                city=payload.city,
+                state=payload.state,
+                zip_code=payload.zip_code,
+            )
+        except (httpx.TimeoutException, httpx.HTTPError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Could not resolve that address to a congressional district. "
+                    "Try using the USPS street abbreviation, e.g. S Pearl Expy."
+                ),
+            ) from exc
+
     user = User(email=email, password_hash=hash_password(payload.password))
     db.add(user)
     db.flush()
     ensure_topic_preferences(db, user)
+    if resolved_location is not None:
+        profile = UserProfile(user_id=user.id)
+        apply_profile_location(profile, payload, resolved_location)
+        db.add(profile)
     session = create_session(db, user)
     db.commit()
     return auth_response(user, session.token)
@@ -160,6 +249,25 @@ async def lookup_bill(
     return response
 
 
+@router.post("/bills/representative-context", response_model=RepresentativeBillSignal)
+async def representative_context_lookup(
+    payload: RepresentativeContextRequest,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_session),
+):
+    representative = await representative_from_user_or_name(db, user, payload.representative_name)
+    cosponsors = await safe_bill_cosponsors(payload.bill.congress_bill_id)
+    house_votes = await safe_house_votes(payload.bill.congress_bill_id)
+    senate_votes = await safe_senate_votes(payload.bill.congress_bill_id)
+    return await representative_signal_for_bill(
+        bill=payload.bill,
+        representative=representative,
+        cosponsors=cosponsors,
+        house_votes=house_votes,
+        senate_votes=senate_votes,
+    )
+
+
 def lookup_error_response(provider: str) -> JSONResponse:
     return JSONResponse(
         status_code=502,
@@ -197,6 +305,43 @@ async def recent_bills(db: Session = Depends(get_session)):
     )
 
 
+@router.get("/monitoring/hot-topics", response_model=HotTopicsResponse)
+def hot_topics(db: Session = Depends(get_session)):
+    items = list(HOT_TOPIC_BILLS)
+    seen = {item.congress_bill_id for item in items}
+    rows = db.query(Bill).order_by(Bill.created_at.desc()).limit(25).all()
+    for row in rows:
+        if row.congress_bill_id in seen or not is_hot_topic_candidate(row):
+            continue
+        items.append(
+            HotTopicBill(
+                congress_bill_id=row.congress_bill_id,
+                title=row.title,
+                topic=row.topic,
+                reason="Recently surfaced in monitoring and tied to a nationally salient policy area.",
+                year=(row.introduced_date.year if row.introduced_date else 2026),
+            )
+        )
+        seen.add(row.congress_bill_id)
+        if len(items) >= 10:
+            break
+    return HotTopicsResponse(items=items[:10])
+
+
+def is_hot_topic_candidate(row: Bill) -> bool:
+    return row.topic in {
+        "Defense",
+        "Elections",
+        "Healthcare",
+        "Immigration",
+        "Tax & Budget",
+        "Energy",
+        "Technology",
+        "Financial Regulation",
+        "Government Operations",
+    }
+
+
 async def representative_context_for_bill(
     db: Session,
     user: User,
@@ -209,39 +354,107 @@ async def representative_context_for_bill(
     representatives, _ = await representatives_for_profile(profile)
     cosponsors = await safe_bill_cosponsors(response.bill.congress_bill_id)
     house_votes = await safe_house_votes(response.bill.congress_bill_id)
+    senate_votes = await safe_senate_votes(response.bill.congress_bill_id)
     sponsor_name = response.bill.sponsor.casefold()
 
     signals: list[RepresentativeBillSignal] = []
     for representative in representatives:
-        rep_name = representative.name.casefold()
-        vote_signal = await representative_vote_signal(response.bill.congress_bill_id, representative, house_votes)
-        if vote_signal:
-            signal, detail = vote_signal
-        elif rep_name and (rep_name in sponsor_name or sponsor_name in rep_name):
-            signal = "Sponsor"
-            detail = "Your representative is listed as the bill sponsor, which is a formal support signal."
-        elif representative_is_cosponsor(representative, cosponsors):
-            signal = "Cosponsor"
-            detail = "Your representative is listed as a cosponsor, which is a formal support signal."
-        else:
-            signal = "No direct signal found"
-            detail = "No sponsor or cosponsor relationship was found in the available Congress.gov data."
-        signal, detail, sources, ai_context = await enrich_representative_position_signal(
-            bill=response.bill.model_dump(mode="json"),
-            representative=representative,
-            signal=signal,
-            detail=detail,
-        )
         signals.append(
-            RepresentativeBillSignal(
+            await representative_signal_for_bill(
+                bill=response.bill,
                 representative=representative,
-                signal=signal,
-                detail=detail,
-                ai_context=ai_context,
-                sources=sources,
+                cosponsors=cosponsors,
+                house_votes=house_votes,
+                senate_votes=senate_votes,
+                sponsor_name=sponsor_name,
             )
         )
     return signals
+
+
+async def representative_from_user_or_name(
+    db: Session,
+    user: User,
+    representative_name: str,
+) -> RepresentativeRecord:
+    requested = representative_name.strip()
+    if not requested:
+        raise HTTPException(status_code=422, detail="Representative name is required.")
+
+    profile = db.query(UserProfile).filter(UserProfile.user_id == user.id).one_or_none()
+    if profile is not None:
+        representatives, _ = await representatives_for_profile(profile)
+        for representative in representatives:
+            if names_refer_to_same_person(representative.name, requested):
+                return representative
+
+    state = profile.state if profile is not None else ""
+    return RepresentativeRecord(
+        name=requested,
+        chamber="Unknown",
+        party="Unknown",
+        state=state,
+    )
+
+
+def names_refer_to_same_person(left: str, right: str) -> bool:
+    normalized_left = normalized_person_name(left)
+    normalized_right = normalized_person_name(right)
+    if not normalized_left or not normalized_right:
+        return False
+    left_parts = set(normalized_left.split())
+    right_parts = set(normalized_right.split())
+    return (
+        normalized_left == normalized_right
+        or normalized_left in normalized_right
+        or normalized_right in normalized_left
+        or (left_parts == right_parts and bool(left_parts))
+        or (len(left_parts) >= 2 and left_parts.issubset(right_parts))
+        or (len(right_parts) >= 2 and right_parts.issubset(left_parts))
+    )
+
+
+async def representative_signal_for_bill(
+    *,
+    bill: BillRecord,
+    representative: RepresentativeRecord,
+    cosponsors: list[dict[str, object]],
+    house_votes: list[dict[str, object]],
+    senate_votes: list[dict[str, object]] | None = None,
+    sponsor_name: str | None = None,
+) -> RepresentativeBillSignal:
+    rep_name = representative.name.casefold()
+    sponsor = sponsor_name if sponsor_name is not None else bill.sponsor.casefold()
+    vote_signal = await representative_vote_signal(
+        bill.congress_bill_id,
+        representative,
+        house_votes,
+        senate_votes or [],
+    )
+    if vote_signal:
+        signal, detail = vote_signal
+    elif rep_name and (rep_name in sponsor or sponsor in rep_name):
+        signal = "Sponsor"
+        detail = "This member is listed as the bill sponsor, which is a formal support signal."
+    elif representative_is_cosponsor(representative, cosponsors):
+        signal = "Cosponsor"
+        detail = "This member is listed as a cosponsor, which is a formal support signal."
+    else:
+        signal = "No direct signal found"
+        detail = "No sponsor or cosponsor relationship was found in the available Congress.gov data."
+    signal, detail, sources, ai_context = await enrich_representative_position_signal(
+        bill=bill.model_dump(mode="json"),
+        representative=representative,
+        signal=signal,
+        detail=detail,
+    )
+    return RepresentativeBillSignal(
+        representative=representative,
+        signal=signal,
+        detail=detail,
+        ai_context=ai_context,
+        sources=sources,
+    )
 
 
 def representative_is_cosponsor(
@@ -298,24 +511,35 @@ async def representative_vote_signal(
     bill_id: str,
     representative: RepresentativeRecord,
     house_votes: list[dict[str, object]],
+    senate_votes: list[dict[str, object]] | None = None,
 ) -> tuple[str, str] | None:
-    if representative.chamber != "House" or not house_votes:
+    if representative.chamber == "House":
+        votes = house_votes
+        chamber = "House"
+        member_vote_lookup = safe_house_member_vote
+    elif representative.chamber == "Senate":
+        votes = senate_votes or []
+        chamber = "Senate"
+        member_vote_lookup = safe_senate_member_vote
+    else:
+        return None
+    if not votes:
         return None
 
-    for vote in preferred_house_votes(house_votes):
-        member_vote = await safe_house_member_vote(vote, representative)
+    for vote in preferred_chamber_votes(votes):
+        member_vote = await member_vote_lookup(vote, representative)
         if not member_vote:
             continue
         vote_cast = str(member_vote.get("vote_cast", "")).strip()
         if not vote_cast:
             continue
         signal = vote_signal_label(vote_cast)
-        question = member_vote.get("vote_question") or "the recorded House vote"
+        question = member_vote.get("vote_question") or f"the recorded {chamber} vote"
         result = member_vote.get("result") or "recorded"
         roll_call = member_vote.get("roll_call_number")
         detail = (
             f"Your representative voted {vote_cast} on {question}. "
-            f"The House vote result was {result}"
+            f"The {chamber} vote result was {result}"
             f"{f' (roll call {roll_call})' if roll_call else ''}."
         )
         return signal, detail
@@ -665,7 +889,7 @@ def search_result_payload(item: SearchResult) -> dict[str, str]:
     }
 
 
-def preferred_house_votes(votes: list[dict[str, object]]) -> list[dict[str, object]]:
+def preferred_chamber_votes(votes: list[dict[str, object]]) -> list[dict[str, object]]:
     def score(vote: dict[str, object]) -> tuple[int, str]:
         question = str(vote.get("voteQuestion", "")).casefold()
         is_final = any(term in question for term in ("pass", "agree", "concur", "suspend"))
@@ -701,12 +925,29 @@ async def safe_house_votes(bill_id: str) -> list[dict[str, object]]:
         return []
 
 
+async def safe_senate_votes(bill_id: str) -> list[dict[str, object]]:
+    try:
+        return await CongressClient().list_senate_votes_for_bill(bill_id)
+    except (httpx.TimeoutException, httpx.HTTPError, Exception):
+        return []
+
+
 async def safe_house_member_vote(
     vote: dict[str, object],
     representative: RepresentativeRecord,
 ) -> dict[str, object] | None:
     try:
         return await CongressClient().get_house_member_vote(vote, representative)
+    except (httpx.TimeoutException, httpx.HTTPError, Exception):
+        return None
+
+
+async def safe_senate_member_vote(
+    vote: dict[str, object],
+    representative: RepresentativeRecord,
+) -> dict[str, object] | None:
+    try:
+        return await CongressClient().get_senate_member_vote(vote, representative)
     except (httpx.TimeoutException, httpx.HTTPError, Exception):
         return None
 
@@ -772,16 +1013,32 @@ async def update_profile_location(
         profile = UserProfile(user_id=user.id)
         db.add(profile)
 
-    profile.street_address = payload.street_address.strip()
-    profile.address_line_2 = payload.address_line_2.strip()
-    profile.city = payload.city.strip()
-    profile.state = resolved.state
-    profile.zip_code = payload.zip_code.strip()
-    profile.congressional_district = resolved.congressional_district
-    profile.location_confidence = resolved.confidence
+    apply_profile_location(profile, payload, resolved)
     db.commit()
     db.refresh(profile)
     return await profile_response(profile)
+
+
+def registration_includes_location(payload: AuthRequest) -> bool:
+    return any(
+        value.strip()
+        for value in (
+            payload.street_address,
+            payload.city,
+            payload.state,
+            payload.zip_code,
+        )
+    )
+
+
+def apply_profile_location(profile: UserProfile, payload: AuthRequest | ProfileLocationRequest, resolved: object) -> None:
+    profile.street_address = payload.street_address.strip()
+    profile.address_line_2 = payload.address_line_2.strip()
+    profile.city = payload.city.strip()
+    profile.state = str(getattr(resolved, "state"))
+    profile.zip_code = payload.zip_code.strip()
+    profile.congressional_district = str(getattr(resolved, "congressional_district"))
+    profile.location_confidence = str(getattr(resolved, "confidence"))
 
 
 async def profile_response(profile: UserProfile) -> UserProfileResponse:

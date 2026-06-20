@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   CircleDollarSign,
   FileSearch,
+  Flame,
   LogOut,
   Loader2,
   Plus,
@@ -92,6 +93,18 @@ type MonitoringRecentResponse = {
   warning?: string | null;
 };
 
+type HotTopicBill = {
+  congress_bill_id: string;
+  title: string;
+  topic: string;
+  reason: string;
+  year: number;
+};
+
+type HotTopicsResponse = {
+  items: HotTopicBill[];
+};
+
 type Interest = {
   id: number;
   topic: string;
@@ -120,6 +133,16 @@ type UserProfile = {
   warning?: string | null;
 };
 
+type RegistrationPayload = {
+  email: string;
+  password: string;
+  street_address?: string;
+  address_line_2?: string;
+  city?: string;
+  state?: string;
+  zip_code?: string;
+};
+
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 const tokenStorageKey = "civic-pulse-token";
 const lastLookupStorageKey = "civic-pulse-last-lookup";
@@ -131,10 +154,13 @@ export default function Home() {
   const [authChecked, setAuthChecked] = useState(false);
   const [lookup, setLookup] = useState<LookupResponse | null>(null);
   const [recent, setRecent] = useState<MonitoringBill[]>([]);
+  const [hotTopics, setHotTopics] = useState<HotTopicBill[]>([]);
   const [interests, setInterests] = useState<Interest[]>([]);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(false);
   const [polling, setPolling] = useState(false);
+  const [representativeCheck, setRepresentativeCheck] = useState<RepresentativeBillSignal | null>(null);
+  const [representativeChecking, setRepresentativeChecking] = useState(false);
   const [newTopic, setNewTopic] = useState("");
   const [status, setStatus] = useState("Ready");
 
@@ -146,6 +172,7 @@ export default function Home() {
 
   async function bootstrap() {
     await loadRecent();
+    await loadHotTopics();
     restoreCachedLookup();
     const storedToken = window.localStorage.getItem(tokenStorageKey);
     if (!storedToken) {
@@ -288,25 +315,39 @@ export default function Home() {
     }
   }
 
-  async function submitAuth(email: string, password: string, mode: "login" | "register") {
+  async function submitAuth(payload: RegistrationPayload, mode: "login" | "register") {
     setStatus(mode === "login" ? "Signing in" : "Creating account");
     const response = await fetch(`${apiBase}/api/auth/${mode}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password })
+      body: JSON.stringify(payload)
     });
-    const payload = await response.json();
+    const body = await response.json();
     if (!response.ok) {
-      setStatus(payload.detail ?? "Authentication failed");
+      setStatus(body.detail ?? "Authentication failed");
       return;
     }
 
-    const auth = payload as AuthResponse;
+    const auth = body as AuthResponse;
     window.localStorage.setItem(tokenStorageKey, auth.token);
     setAuthToken(auth.token);
     setUser(auth.user);
     setStatus("Signed in");
-    await loadInterests(auth.token);
+    await Promise.all([loadInterests(auth.token), loadProfile(auth.token)]);
+  }
+
+  async function loadHotTopics() {
+    try {
+      const response = await fetch(`${apiBase}/api/monitoring/hot-topics`);
+      if (!response.ok) {
+        setHotTopics([]);
+        return;
+      }
+      const payload = (await response.json()) as HotTopicsResponse;
+      setHotTopics(payload.items ?? []);
+    } catch {
+      setHotTopics([]);
+    }
   }
 
   function signOut() {
@@ -343,6 +384,7 @@ export default function Home() {
         return;
       }
       setLookup(payload);
+      setRepresentativeCheck(null);
       cacheLookup(nextBillId, payload);
       setStatus("Report generated");
       await loadRecent();
@@ -375,6 +417,31 @@ export default function Home() {
       lastLookupStorageKey,
       JSON.stringify({ billId: nextBillId, lookup: payload, cachedAt: Date.now() })
     );
+  }
+
+  async function runRepresentativeCheck(representativeName: string) {
+    const name = representativeName.trim();
+    if (!authToken || !lookup || !name) return;
+    setRepresentativeChecking(true);
+    setStatus(`Checking ${name}`);
+    try {
+      const response = await fetch(`${apiBase}/api/bills/representative-context`, {
+        method: "POST",
+        headers: authHeaders(authToken),
+        body: JSON.stringify({ bill: lookup.bill, representative_name: name })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setStatus(payload.detail ?? "Representative check failed");
+        return;
+      }
+      setRepresentativeCheck(payload);
+      setStatus("Representative context generated");
+    } catch {
+      setStatus("Could not reach the API");
+    } finally {
+      setRepresentativeChecking(false);
+    }
   }
 
   async function pollBills() {
@@ -548,7 +615,15 @@ export default function Home() {
         </div>
 
         <aside className="grid gap-5">
-          <ProfileCard profile={profile} onSave={saveProfileLocation} />
+          <RepresentativeLookupCard
+            profile={profile}
+            lookup={lookup}
+            result={representativeCheck}
+            loading={representativeChecking}
+            onRun={runRepresentativeCheck}
+          />
+
+          <HotTopicsCard items={hotTopics} onSelect={runLookup} />
 
           <div className="rounded border border-line bg-white">
             <div className="flex items-center justify-between border-b border-line px-4 py-3">
@@ -662,10 +737,15 @@ function LoginPage({
   onSubmit
 }: {
   status: string;
-  onSubmit: (email: string, password: string, mode: "login" | "register") => Promise<void>;
+  onSubmit: (payload: RegistrationPayload, mode: "login" | "register") => Promise<void>;
 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [streetAddress, setStreetAddress] = useState("");
+  const [addressLine2, setAddressLine2] = useState("");
+  const [city, setCity] = useState("");
+  const [state, setState] = useState("");
+  const [zipCode, setZipCode] = useState("");
   const [mode, setMode] = useState<"login" | "register">("login");
   const [submitting, setSubmitting] = useState(false);
 
@@ -673,7 +753,18 @@ function LoginPage({
     event.preventDefault();
     setSubmitting(true);
     try {
-      await onSubmit(email, password, mode);
+      await onSubmit(
+        {
+          email,
+          password,
+          street_address: streetAddress,
+          address_line_2: addressLine2,
+          city,
+          state,
+          zip_code: zipCode
+        },
+        mode
+      );
     } finally {
       setSubmitting(false);
     }
@@ -738,6 +829,62 @@ function LoginPage({
             />
           </label>
 
+          {mode === "register" ? (
+            <div className="mt-4 grid gap-3 border-t border-line pt-4">
+              <p className="text-sm leading-6 text-slate-600">
+                Add your address so reports can show your House representative and both senators.
+              </p>
+              <label className="block text-sm font-medium">
+                Street address
+                <input
+                  className="focus-ring mt-1 w-full rounded border border-line px-3 py-2"
+                  value={streetAddress}
+                  onChange={(event) => setStreetAddress(event.target.value)}
+                  required={mode === "register"}
+                />
+              </label>
+              <label className="block text-sm font-medium">
+                Address line 2
+                <input
+                  className="focus-ring mt-1 w-full rounded border border-line px-3 py-2"
+                  value={addressLine2}
+                  onChange={(event) => setAddressLine2(event.target.value)}
+                  placeholder="Apt, suite, floor"
+                />
+              </label>
+              <div className="grid gap-3 sm:grid-cols-[1fr_70px_100px]">
+                <label className="block text-sm font-medium">
+                  City
+                  <input
+                    className="focus-ring mt-1 w-full rounded border border-line px-3 py-2"
+                    value={city}
+                    onChange={(event) => setCity(event.target.value)}
+                    required={mode === "register"}
+                  />
+                </label>
+                <label className="block text-sm font-medium">
+                  State
+                  <input
+                    className="focus-ring mt-1 w-full rounded border border-line px-3 py-2 uppercase"
+                    value={state}
+                    onChange={(event) => setState(event.target.value.toUpperCase())}
+                    maxLength={2}
+                    required={mode === "register"}
+                  />
+                </label>
+                <label className="block text-sm font-medium">
+                  ZIP
+                  <input
+                    className="focus-ring mt-1 w-full rounded border border-line px-3 py-2"
+                    value={zipCode}
+                    onChange={(event) => setZipCode(event.target.value)}
+                    required={mode === "register"}
+                  />
+                </label>
+              </div>
+            </div>
+          ) : null}
+
           <button
             className="focus-ring mt-4 inline-flex w-full items-center justify-center gap-2 rounded bg-civic px-4 py-2 font-medium text-white disabled:opacity-60"
             disabled={submitting}
@@ -757,6 +904,104 @@ function Metric({ label, value, compact = false }: { label: string; value: strin
     <div className={compact ? "p-3" : "rounded border border-line bg-panel p-3"}>
       <div className="text-xs font-semibold uppercase text-slate-500">{label}</div>
       <div className="mt-1 break-words text-sm font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function RepresentativeLookupCard({
+  profile,
+  lookup,
+  result,
+  loading,
+  onRun
+}: {
+  profile: UserProfile | null;
+  lookup: LookupResponse | null;
+  result: RepresentativeBillSignal | null;
+  loading: boolean;
+  onRun: (representativeName: string) => Promise<void>;
+}) {
+  const [representativeName, setRepresentativeName] = useState("");
+
+  useEffect(() => {
+    if (!representativeName && profile?.representatives[0]) {
+      setRepresentativeName(profile.representatives[0].name);
+    }
+  }, [profile, representativeName]);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await onRun(representativeName);
+  }
+
+  return (
+    <div className="rounded border border-line bg-white">
+      <div className="flex items-center gap-2 border-b border-line px-4 py-3">
+        <BrainCircuit size={18} aria-hidden="true" />
+        <h2 className="text-base font-semibold">Representative Check</h2>
+      </div>
+      <form onSubmit={submit} className="grid gap-3 p-4">
+        <p className="text-sm leading-6 text-slate-600">
+          Curious what a specific representative thinks of the bill you searched? Enter a senator or
+          representative and this will use the current report as context.
+        </p>
+        <input
+          className="focus-ring rounded border border-line px-3 py-2 text-sm"
+          value={representativeName}
+          onChange={(event) => setRepresentativeName(event.target.value)}
+          placeholder="Representative or senator name"
+          aria-label="Representative or senator name"
+        />
+        <button
+          className="focus-ring inline-flex items-center justify-center gap-2 rounded border border-line px-3 py-2 text-sm font-medium"
+          disabled={loading || !lookup || !representativeName.trim()}
+        >
+          {loading ? <Loader2 className="animate-spin" size={16} /> : <Search size={16} />}
+          Check current bill
+        </button>
+      </form>
+
+      {profile?.representatives && profile.representatives.length > 0 ? (
+        <div className="border-t border-line p-4 text-sm">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <div className="font-semibold">
+              {profile.state}-{profile.congressional_district}
+            </div>
+            <Link href="/profile" className="text-xs font-medium text-civic hover:underline">
+              Edit address
+            </Link>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {profile.representatives.map((representative) => (
+              <button
+                key={`${representative.chamber}-${representative.name}`}
+                type="button"
+                onClick={() => setRepresentativeName(representative.name)}
+                className="focus-ring rounded border border-line bg-panel px-2 py-1 text-left text-xs"
+              >
+                <span className="block font-medium">{representative.name}</span>
+                <span className="text-slate-600">
+                  {representative.chamber}
+                </span>
+                <span className={`mt-1 inline-flex rounded border px-1.5 py-0.5 text-[11px] font-semibold ${partyBadgeClass(representative.party)}`}>
+                  {partyLabel(representative.party)}
+                </span>
+              </button>
+            ))}
+          </div>
+          {profile.warning ? <p className="mt-2 text-xs text-slate-500">{profile.warning}</p> : null}
+        </div>
+      ) : (
+        <div className="border-t border-line p-4 text-sm text-slate-600">
+          Save your address on the profile page to load your House representative and both senators.
+        </div>
+      )}
+
+      {result ? (
+        <div className="border-t border-line p-4">
+          <RepresentativeContext signals={[result]} title="Representative Result" />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -875,15 +1120,69 @@ function ProfileCard({
   );
 }
 
-function RepresentativeContext({ signals }: { signals: RepresentativeBillSignal[] }) {
+function HotTopicsCard({
+  items,
+  onSelect
+}: {
+  items: HotTopicBill[];
+  onSelect: (billId: string) => Promise<void>;
+}) {
+  return (
+    <div className="rounded border border-line bg-white">
+      <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
+        <div className="flex items-center gap-2">
+          <Flame size={18} aria-hidden="true" />
+          <h2 className="text-base font-semibold">Hot Topics</h2>
+        </div>
+        <span className="text-xs text-slate-500">Search ideas</span>
+      </div>
+      <div className="divide-y divide-line">
+        {items.length === 0 ? (
+          <p className="p-4 text-sm leading-6 text-slate-600">
+            Hot topics are temporarily unavailable.
+          </p>
+        ) : null}
+        {items.slice(0, 7).map((item) => (
+          <button
+            key={item.congress_bill_id}
+            type="button"
+            onClick={() => void onSelect(item.congress_bill_id)}
+            className="focus-ring block w-full p-4 text-left transition hover:bg-panel"
+          >
+            <div className="mb-1 flex flex-wrap items-center gap-2">
+              <span className="text-xs font-semibold uppercase text-civic">
+                {item.congress_bill_id}
+              </span>
+              <span className="rounded bg-slate-100 px-2 py-0.5 text-xs">{item.topic}</span>
+              <span className="text-xs text-slate-500">{item.year}</span>
+            </div>
+            <h3 className="text-sm font-semibold leading-5">{item.title}</h3>
+            <p className="mt-1 text-xs leading-5 text-slate-600">{item.reason}</p>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RepresentativeContext({
+  signals,
+  title = "Your Representative Context"
+}: {
+  signals: RepresentativeBillSignal[];
+  title?: string;
+}) {
   return (
     <section className="rounded border border-line bg-panel p-3">
-      <h4 className="mb-2 text-sm font-semibold uppercase text-slate-500">Your Representative Context</h4>
+      <h4 className="mb-2 text-sm font-semibold uppercase text-slate-500">{title}</h4>
       <div className="grid gap-2">
         {signals.map((signal) => (
           <article key={`${signal.representative.chamber}-${signal.representative.name}`} className="text-sm leading-6">
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-semibold">{signal.representative.name}</span>
+              <span className={`rounded border px-2 py-0.5 text-xs font-semibold ${partyBadgeClass(signal.representative.party)}`}>
+                {partyLabel(signal.representative.party)}
+              </span>
               <span className="rounded bg-white px-2 py-0.5 text-xs font-medium text-slate-600">
                 {signal.signal}
               </span>
@@ -982,6 +1281,22 @@ function partyColor(code: "D" | "R" | "I" | "U") {
   if (code === "D") return "border-blue-200 bg-blue-50 text-blue-700";
   if (code === "R") return "border-red-200 bg-red-50 text-red-700";
   if (code === "I") return "border-violet-200 bg-violet-50 text-violet-700";
+  return "border-slate-200 bg-white text-slate-600";
+}
+
+function partyLabel(party: string) {
+  const normalized = party.trim().toLowerCase();
+  if (party === "D" || normalized.includes("democrat")) return "Democrat";
+  if (party === "R" || normalized.includes("republican")) return "Republican";
+  if (party === "I" || normalized.includes("independent")) return "Independent";
+  return party || "Unknown";
+}
+
+function partyBadgeClass(party: string) {
+  const label = partyLabel(party);
+  if (label === "Democrat") return "border-blue-200 bg-blue-50 text-blue-700";
+  if (label === "Republican") return "border-red-200 bg-red-50 text-red-700";
+  if (label === "Independent") return "border-violet-200 bg-violet-50 text-violet-700";
   return "border-slate-200 bg-white text-slate-600";
 }
 

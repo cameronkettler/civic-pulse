@@ -137,6 +137,76 @@ class _HouseVoteAsyncClient:
         )
 
 
+class _SenateVoteAsyncClient:
+    def __init__(self, **_: object) -> None:
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        return None
+
+    async def get(self, url: str, **__: object) -> httpx.Response:
+        if url.endswith("/senate-vote/119/1/22/members"):
+            return httpx.Response(
+                200,
+                request=httpx.Request("GET", url),
+                json={
+                    "senateRollCallVoteMemberVotes": {
+                        "voteQuestion": "On Passage",
+                        "result": "Passed",
+                        "rollCallNumber": "22",
+                        "results": {
+                            "item": [
+                                {
+                                    "bioguideId": "C001098",
+                                    "voteCast": "Yea",
+                                    "firstName": "Ted",
+                                    "lastName": "Cruz",
+                                    "voteParty": "R",
+                                    "voteState": "TX",
+                                }
+                            ]
+                        },
+                    }
+                },
+            )
+
+        votes = []
+        if url.endswith("/senate-vote/119/1"):
+            votes = {
+                "item": [
+                    {
+                        "congress": "119",
+                        "sessionNumber": "1",
+                        "rollCallNumber": "22",
+                        "legislationType": "S",
+                        "legislationNumber": 5,
+                        "voteQuestion": "On Passage",
+                        "result": "Passed",
+                        "startDate": "2025-01-20T12:00:00-04:00",
+                    },
+                    {
+                        "congress": "119",
+                        "sessionNumber": "1",
+                        "rollCallNumber": "23",
+                        "legislationType": "S",
+                        "legislationNumber": "6",
+                        "voteQuestion": "On Passage",
+                        "result": "Failed",
+                        "startDate": "2025-01-20T13:00:00-04:00",
+                    },
+                ]
+            }
+
+        return httpx.Response(
+            200,
+            request=httpx.Request("GET", url),
+            json={"senateRollCallVotes": votes},
+        )
+
+
 class _CosponsorAsyncClient:
     def __init__(self, **_: object) -> None:
         pass
@@ -228,6 +298,40 @@ def test_get_house_member_vote_returns_vote_cast(monkeypatch):
 
     assert member_vote is not None
     assert member_vote["vote_cast"] == "Nay"
+
+
+def test_list_senate_votes_for_bill_filters_to_matching_legislation(monkeypatch):
+    monkeypatch.setattr(httpx, "AsyncClient", _SenateVoteAsyncClient)
+
+    votes = asyncio.run(
+        CongressClient(Settings(congress_api_key="test-key")).list_senate_votes_for_bill("s-5-119")
+    )
+
+    assert len(votes) == 1
+    assert votes[0]["rollCallNumber"] == "22"
+
+
+def test_get_senate_member_vote_returns_vote_cast(monkeypatch):
+    monkeypatch.setattr(httpx, "AsyncClient", _SenateVoteAsyncClient)
+    vote = {
+        "congress": "119",
+        "sessionNumber": "1",
+        "rollCallNumber": "22",
+    }
+    representative = RepresentativeRecord(
+        name="Cruz, Ted",
+        chamber="Senate",
+        party="Republican",
+        state="TX",
+        bioguide_id="C001098",
+    )
+
+    member_vote = asyncio.run(
+        CongressClient(Settings(congress_api_key="test-key")).get_senate_member_vote(vote, representative)
+    )
+
+    assert member_vote is not None
+    assert member_vote["vote_cast"] == "Yea"
 
 
 def test_list_bill_cosponsors_paginates_and_unwraps_items(monkeypatch):
