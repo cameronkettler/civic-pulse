@@ -32,4 +32,4 @@ Output: notification payload and summary state.
 
 ## Design Notes
 
-Both workflows use LangGraph when available and include a sequential fallback to keep tests and demo environments resilient. The workflow classes are independent from FastAPI and can be moved into workers later.
+Both workflows use LangGraph when available and include a sequential fallback to keep tests and demo environments resilient. The lookup workflow can optionally call OpenAI during report generation when `OPENAI_API_LIVE=true`; otherwise it uses deterministic templates. The workflow classes are independent from FastAPI and can be moved into workers later.

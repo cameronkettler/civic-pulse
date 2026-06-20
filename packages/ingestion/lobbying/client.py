@@ -23,7 +23,11 @@ class LobbyingDisclosureClient:
                     params={"filing_specific_lobbying_issues": query, "page_size": 5},
                 )
                 response.raise_for_status()
-                results = response.json().get("results", [])
+                results = [
+                    self._normalize_filing(item)
+                    for item in response.json().get("results", [])
+                    if isinstance(item, dict)
+                ]
         except httpx.HTTPError:
             return self._demo_activity(query)
 
@@ -32,6 +36,24 @@ class LobbyingDisclosureClient:
             "query": query,
             "registrations": results,
             "confidence": "medium" if results else "low",
+        }
+
+    def _normalize_filing(self, filing: dict[str, Any]) -> dict[str, Any]:
+        client = filing.get("client") if isinstance(filing.get("client"), dict) else {}
+        registrant = filing.get("registrant") if isinstance(filing.get("registrant"), dict) else {}
+        lobbying_activities = filing.get("lobbying_activities") or []
+        issues = [
+            activity.get("general_issue_code_display") or activity.get("general_issue_code")
+            for activity in lobbying_activities
+            if isinstance(activity, dict)
+        ]
+        return {
+            **filing,
+            "client_name": filing.get("client_name") or client.get("name"),
+            "registrant_name": filing.get("registrant_name") or registrant.get("name"),
+            "issue": filing.get("issue")
+            or filing.get("filing_specific_lobbying_issues")
+            or ", ".join(issue for issue in issues if issue),
         }
 
     def _auth_headers(self) -> dict[str, str]:

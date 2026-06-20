@@ -3,7 +3,11 @@ from typing import Any, TypedDict
 from packages.ingestion.congress import CongressClient
 from packages.ingestion.fec import FECClient
 from packages.ingestion.lobbying import LobbyingDisclosureClient
-from packages.shared.schemas import BillLookupResponse, BillRecord
+from packages.shared.config import Settings, get_settings
+from packages.shared.schemas import BillLookupResponse, BillRecord, StakeholderInsight
+
+from .input_resolver import BillInputResolution, BillInputResolver
+from .report_generator import OpenAIReportGenerator
 
 try:
     from langgraph.graph import END, StateGraph
@@ -14,13 +18,14 @@ except ImportError:  # pragma: no cover - exercised only when optional dependenc
 
 class BillLookupState(TypedDict, total=False):
     bill_id: str
+    resolved_input: BillInputResolution
     bill: BillRecord
     sponsor: dict[str, Any]
     finance: dict[str, Any]
     lobbying: dict[str, Any]
     generated_summary: str
     generated_analysis: str
-    stakeholders: dict[str, list[str]]
+    stakeholders: dict[str, list[StakeholderInsight]]
     caveats: list[str]
     confidence: str
 
@@ -31,10 +36,16 @@ class BillLookupWorkflow:
         congress_client: CongressClient | None = None,
         fec_client: FECClient | None = None,
         lobbying_client: LobbyingDisclosureClient | None = None,
+        input_resolver: BillInputResolver | None = None,
+        report_generator: OpenAIReportGenerator | None = None,
+        settings: Settings | None = None,
     ) -> None:
-        self.congress = congress_client or CongressClient()
-        self.fec = fec_client or FECClient()
-        self.lobbying = lobbying_client or LobbyingDisclosureClient()
+        self.settings = settings or get_settings()
+        self.congress = congress_client or CongressClient(self.settings)
+        self.fec = fec_client or FECClient(self.settings)
+        self.lobbying = lobbying_client or LobbyingDisclosureClient(self.settings)
+        self.input_resolver = input_resolver or BillInputResolver(self.settings)
+        self.report_generator = report_generator or OpenAIReportGenerator(self.settings)
         self.graph = self._build_graph()
 
     async def run(self, bill_id: str) -> BillLookupResponse:
@@ -50,6 +61,7 @@ class BillLookupWorkflow:
             return None
 
         workflow = StateGraph(BillLookupState)
+        workflow.add_node("resolve_input", self.resolve_input)
         workflow.add_node("retrieve_bill", self.retrieve_bill)
         workflow.add_node("retrieve_sponsor", self.retrieve_sponsor)
         workflow.add_node("retrieve_finance", self.retrieve_finance)
@@ -57,7 +69,8 @@ class BillLookupWorkflow:
         workflow.add_node("aggregate_findings", self.aggregate_findings)
         workflow.add_node("generate_report", self.generate_report)
 
-        workflow.set_entry_point("retrieve_bill")
+        workflow.set_entry_point("resolve_input")
+        workflow.add_edge("resolve_input", "retrieve_bill")
         workflow.add_edge("retrieve_bill", "retrieve_sponsor")
         workflow.add_edge("retrieve_sponsor", "retrieve_finance")
         workflow.add_edge("retrieve_finance", "retrieve_lobbying")
@@ -68,6 +81,7 @@ class BillLookupWorkflow:
 
     async def _run_fallback(self, state: BillLookupState) -> BillLookupState:
         for step in (
+            self.resolve_input,
             self.retrieve_bill,
             self.retrieve_sponsor,
             self.retrieve_finance,
@@ -77,6 +91,10 @@ class BillLookupWorkflow:
         ):
             state.update(await step(state))
         return state
+
+    async def resolve_input(self, state: BillLookupState) -> BillLookupState:
+        resolution = await self.input_resolver.resolve(state["bill_id"])
+        return {"resolved_input": resolution, "bill_id": resolution.bill_id}
 
     async def retrieve_bill(self, state: BillLookupState) -> BillLookupState:
         return {"bill": await self.congress.get_bill(state["bill_id"])}
@@ -91,14 +109,25 @@ class BillLookupWorkflow:
         return {"lobbying": await self.lobbying.search_activity(state["bill"].title)}
 
     async def aggregate_findings(self, state: BillLookupState) -> BillLookupState:
-        lobbying_clients = [
-            item.get("client_name", "Unknown stakeholder")
-            for item in state.get("lobbying", {}).get("registrations", [])
-        ]
+        lobbying_clients = self._stakeholder_insights(
+            state.get("lobbying", {}).get("registrations", [])
+        )
         return {
             "stakeholders": {
-                "possible_supporters": lobbying_clients[:1] or ["Agency modernization advocates"],
-                "possible_opponents": lobbying_clients[1:] or ["Civil liberties watchdogs"],
+                "possible_supporters": lobbying_clients[:1]
+                or [
+                    StakeholderInsight(
+                        name="Agency modernization advocates",
+                        context="Fallback stakeholder used when no related lobbying activity is found.",
+                    )
+                ],
+                "possible_opponents": lobbying_clients[1:]
+                or [
+                    StakeholderInsight(
+                        name="Civil liberties watchdogs",
+                        context="Fallback stakeholder used when no related lobbying activity is found.",
+                    )
+                ],
             },
             "caveats": [
                 "Provider data can lag official filings and should be verified before publication.",
@@ -107,10 +136,56 @@ class BillLookupWorkflow:
             "confidence": self._confidence(state),
         }
 
+    def _stakeholder_insights(self, registrations: list[dict[str, Any]]) -> list[StakeholderInsight]:
+        insights: list[StakeholderInsight] = []
+        seen: set[str] = set()
+        for item in registrations:
+            name = (
+                item.get("client_name")
+                or item.get("registrant_name")
+                or self._nested_name(item.get("client"))
+                or self._nested_name(item.get("registrant"))
+            )
+            if not name:
+                continue
+            normalized = name.strip()
+            key = normalized.casefold()
+            if normalized and key not in seen:
+                insights.append(
+                    StakeholderInsight(
+                        name=normalized,
+                        context=self._stakeholder_context(item),
+                    )
+                )
+                seen.add(key)
+        return insights
+
+    def _nested_name(self, value: Any) -> str | None:
+        if isinstance(value, dict):
+            name = value.get("name")
+            return name if isinstance(name, str) else None
+        return None
+
+    def _stakeholder_context(self, item: dict[str, Any]) -> str:
+        pieces = []
+        if item.get("issue"):
+            pieces.append(f"Issue area: {item['issue']}")
+        if item.get("registrant_name"):
+            pieces.append(f"Registrant: {item['registrant_name']}")
+        if item.get("filing_year"):
+            pieces.append(f"Filing year: {item['filing_year']}")
+        if item.get("filing_type_display"):
+            pieces.append(f"Filing type: {item['filing_type_display']}")
+        return "; ".join(pieces) or "Related lobbying disclosure found for this bill title or policy terms."
+
     async def generate_report(self, state: BillLookupState) -> BillLookupState:
+        fallback = self._template_report(state)
+        return await self.report_generator.generate(state=state, fallback=fallback)
+
+    def _template_report(self, state: BillLookupState) -> BillLookupState:
         bill = state["bill"]
-        supporters = ", ".join(state["stakeholders"]["possible_supporters"])
-        opponents = ", ".join(state["stakeholders"]["possible_opponents"])
+        supporters = ", ".join(item.name for item in state["stakeholders"]["possible_supporters"])
+        opponents = ", ".join(item.name for item in state["stakeholders"]["possible_opponents"])
         summary = f"{bill.congress_bill_id}: {bill.title}. {bill.summary}"
         analysis = (
             f"{bill.sponsor} introduced the bill, which is currently {bill.status}. "
@@ -118,7 +193,12 @@ class BillLookupWorkflow:
             f"Possible opposition or scrutiny may come from {opponents}. Campaign finance signals "
             "should be treated as contextual patterns rather than proof of influence."
         )
-        return {"generated_summary": summary, "generated_analysis": analysis}
+        return {
+            "generated_summary": summary,
+            "generated_analysis": analysis,
+            "caveats": state["caveats"],
+            "confidence": state["confidence"],
+        }
 
     def _confidence(self, state: BillLookupState) -> str:
         confidences = {

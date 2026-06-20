@@ -26,6 +26,11 @@ class BillLookupRequest(BaseModel):
     bill_id: str = Field(..., examples=["hr-1234-118"])
 
 
+class StakeholderInsight(BaseModel):
+    name: str
+    context: str = "Related lobbying disclosure found for this bill title or policy terms."
+
+
 class BillLookupResponse(BaseModel):
     bill: BillRecord
     sponsor: dict[str, Any]
@@ -33,7 +38,7 @@ class BillLookupResponse(BaseModel):
     lobbying: dict[str, Any]
     generated_summary: str
     generated_analysis: str
-    stakeholders: dict[str, list[str]]
+    stakeholders: dict[str, list[StakeholderInsight]]
     caveats: list[str]
     confidence: str
 

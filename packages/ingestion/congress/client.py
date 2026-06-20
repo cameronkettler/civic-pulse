@@ -5,6 +5,7 @@ import httpx
 
 from packages.shared.config import Settings, get_settings
 from packages.shared.schemas import BillRecord, SourceReference
+from packages.shared.topics import TOPIC_KEYWORDS
 
 
 class CongressClient:
@@ -101,19 +102,10 @@ class CongressClient:
 
     def classify_topic(self, text: str) -> str:
         lowered = text.lower()
-        rules = {
-            "Artificial Intelligence": ["artificial intelligence", "ai ", "algorithm"],
-            "Healthcare": ["health", "medicare", "medicaid", "hospital"],
-            "Housing": ["housing", "mortgage", "rent"],
-            "Energy": ["energy", "grid", "electric", "oil", "gas"],
-            "Defense": ["defense", "military", "armed forces"],
-            "Technology": ["technology", "cyber", "semiconductor", "broadband"],
-            "Privacy": ["privacy", "data protection", "surveillance"],
-        }
-        for topic, keywords in rules.items():
+        for topic, keywords in TOPIC_KEYWORDS.items():
             if any(keyword in lowered for keyword in keywords):
                 return topic
-        return "Technology"
+        return "Uncategorized"
 
     def _parse_bill_id(self, bill_id: str) -> tuple[str, str, str]:
         normalized = bill_id.lower().replace(".", "").replace(" ", "-")
