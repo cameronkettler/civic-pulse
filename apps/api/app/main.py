@@ -25,6 +25,23 @@ def seed_interests() -> None:
                 db.add(UserInterest(topic=topic, enabled=True))
 
 
+def cors_options() -> dict[str, object]:
+    origins = get_settings().cors_origins
+    if "*" in origins:
+        return {
+            "allow_origins": ["*"],
+            "allow_credentials": False,
+            "allow_methods": ["*"],
+            "allow_headers": ["*"],
+        }
+    return {
+        "allow_origins": origins,
+        "allow_credentials": True,
+        "allow_methods": ["*"],
+        "allow_headers": ["*"],
+    }
+
+
 app = FastAPI(
     title="Civic Pulse API",
     description="Agentic civic intelligence for federal legislation.",
@@ -34,10 +51,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    **cors_options(),
 )
 
 app.include_router(router, prefix="/api")

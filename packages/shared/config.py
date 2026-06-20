@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     openai_reasoning_effort: str = "low"
     monitoring_topics: str = DEFAULT_MONITORING_TOPICS
     monitoring_poll_limit: int = 10
+    job_token: str | None = None
+    session_token_bytes: int = 32
+    password_hash_iterations: int = 210000
+    web_cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     smtp_host: str | None = None
     smtp_port: int = 587
     smtp_username: str | None = None
@@ -33,6 +37,10 @@ class Settings(BaseSettings):
     @property
     def topics(self) -> list[str]:
         return [topic.strip() for topic in self.monitoring_topics.split(",") if topic.strip()]
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [origin.strip() for origin in self.web_cors_origins.split(",") if origin.strip()]
 
 
 @lru_cache

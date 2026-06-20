@@ -26,10 +26,14 @@ class BillMonitoringWorkflow:
         congress_client: CongressClient | None = None,
         notification_service: EmailNotificationService | None = None,
         settings: Settings | None = None,
+        monitored_topics: set[str] | None = None,
+        email_to: str | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.congress = congress_client or CongressClient(self.settings)
         self.notifications = notification_service or EmailNotificationService(self.settings)
+        self.monitored_topics = monitored_topics
+        self.email_to = email_to or self.settings.email_to
         self.graph = self._build_graph()
 
     async def run(self, bill: BillRecord) -> BillMonitoringState:
@@ -85,7 +89,8 @@ class BillMonitoringWorkflow:
         }
 
     async def determine_relevance(self, state: BillMonitoringState) -> BillMonitoringState:
-        return {"relevant": state["topic"] in self.settings.topics}
+        topics = self.monitored_topics or set(self.settings.topics)
+        return {"relevant": state["topic"] in topics}
 
     async def generate_email_content(self, state: BillMonitoringState) -> BillMonitoringState:
         bill = state["bill"]
@@ -94,7 +99,7 @@ class BillMonitoringWorkflow:
         html = f"<h1>{bill.title}</h1><p>{state['summary']}</p>"
         return {
             "notification": NotificationPayload(
-                recipient=self.settings.email_to,
+                recipient=self.email_to,
                 subject=subject,
                 html_body=html,
                 text_body=text,

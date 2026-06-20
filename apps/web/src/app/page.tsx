@@ -1,6 +1,18 @@
 "use client";
 
-import { Activity, Bell, CheckCircle2, FileSearch, Loader2, Radar, Search } from "lucide-react";
+import {
+  Activity,
+  Bell,
+  CheckCircle2,
+  CircleDollarSign,
+  FileSearch,
+  LogOut,
+  Loader2,
+  Radar,
+  Search,
+  ShieldCheck,
+  UserRound
+} from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 type LookupResponse = {
@@ -16,6 +28,7 @@ type LookupResponse = {
   finance: { patterns?: string[]; top_industries?: string[]; confidence?: string };
   generated_summary: string;
   generated_analysis: string;
+  analysis_sections?: Record<string, string>;
   stakeholders: {
     possible_supporters: StakeholderInsight[];
     possible_opponents: StakeholderInsight[];
@@ -27,6 +40,13 @@ type LookupResponse = {
 type StakeholderInsight = {
   name: string;
   context: string;
+  takeaway?: string;
+  issue_area?: string | null;
+  registrant_name?: string | null;
+  filing_year?: number | null;
+  filing_type?: string | null;
+  recency?: string;
+  relevance?: string;
 };
 
 type MonitoringBill = {
@@ -43,10 +63,24 @@ type Interest = {
   enabled: boolean;
 };
 
+type AuthUser = {
+  id: number;
+  email: string;
+};
+
+type AuthResponse = {
+  token: string;
+  user: AuthUser;
+};
+
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+const tokenStorageKey = "civic-pulse-token";
 
 export default function Home() {
   const [billId, setBillId] = useState("hr-1234-119");
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
   const [lookup, setLookup] = useState<LookupResponse | null>(null);
   const [recent, setRecent] = useState<MonitoringBill[]>([]);
   const [interests, setInterests] = useState<Interest[]>([]);
@@ -55,19 +89,105 @@ export default function Home() {
   const [status, setStatus] = useState("Ready");
 
   useEffect(() => {
-    void Promise.all([loadRecent(), loadInterests()]);
+    void bootstrap();
   }, []);
 
   const enabledCount = useMemo(() => interests.filter((item) => item.enabled).length, [interests]);
+
+  async function bootstrap() {
+    await loadRecent();
+    const storedToken = window.localStorage.getItem(tokenStorageKey);
+    if (!storedToken) {
+      setAuthChecked(true);
+      return;
+    }
+
+    try {
+      const response = await fetch(`${apiBase}/api/auth/me`, {
+        headers: authHeaders(storedToken)
+      });
+      if (!response.ok) {
+        window.localStorage.removeItem(tokenStorageKey);
+        setAuthChecked(true);
+        return;
+      }
+      const account = (await response.json()) as AuthUser;
+      setAuthToken(storedToken);
+      setUser(account);
+      await loadInterests(storedToken);
+    } finally {
+      setAuthChecked(true);
+    }
+  }
 
   async function loadRecent() {
     const response = await fetch(`${apiBase}/api/monitoring/recent`);
     setRecent(await response.json());
   }
 
-  async function loadInterests() {
-    const response = await fetch(`${apiBase}/api/interests`);
+  async function loadInterests(token = authToken) {
+    if (!token) return;
+    const response = await fetch(`${apiBase}/api/interests`, {
+      headers: authHeaders(token)
+    });
+    if (response.status === 401) {
+      signOut();
+      return;
+    }
     setInterests(await response.json());
+  }
+
+  async function toggleInterest(interest: Interest) {
+    if (!authToken) return;
+    const next = !interest.enabled;
+    setInterests((current) =>
+      current.map((item) => (item.id === interest.id ? { ...item, enabled: next } : item))
+    );
+    try {
+      const response = await fetch(`${apiBase}/api/interests/${encodeURIComponent(interest.topic)}`, {
+        method: "PATCH",
+        headers: authHeaders(authToken),
+        body: JSON.stringify({ enabled: next })
+      });
+      if (!response.ok) {
+        await loadInterests();
+        setStatus("Could not update alert topic");
+        return;
+      }
+      setStatus(`${interest.topic} ${next ? "enabled" : "disabled"} for monitoring`);
+    } catch {
+      await loadInterests();
+      setStatus("Could not reach the API");
+    }
+  }
+
+  async function submitAuth(email: string, password: string, mode: "login" | "register") {
+    setStatus(mode === "login" ? "Signing in" : "Creating account");
+    const response = await fetch(`${apiBase}/api/auth/${mode}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password })
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      setStatus(payload.detail ?? "Authentication failed");
+      return;
+    }
+
+    const auth = payload as AuthResponse;
+    window.localStorage.setItem(tokenStorageKey, auth.token);
+    setAuthToken(auth.token);
+    setUser(auth.user);
+    setStatus("Signed in");
+    await loadInterests(auth.token);
+  }
+
+  function signOut() {
+    window.localStorage.removeItem(tokenStorageKey);
+    setAuthToken(null);
+    setUser(null);
+    setInterests([]);
+    setStatus("Signed out");
   }
 
   async function submitLookup(event: FormEvent<HTMLFormElement>) {
@@ -98,10 +218,14 @@ export default function Home() {
   }
 
   async function pollBills() {
+    if (!authToken) return;
     setPolling(true);
     setStatus("Polling Congress.gov feed");
     try {
-      const response = await fetch(`${apiBase}/api/monitoring/poll`, { method: "POST" });
+      const response = await fetch(`${apiBase}/api/monitoring/poll`, {
+        method: "POST",
+        headers: authHeaders(authToken)
+      });
       const payload = await response.json();
       setStatus(
         `Poll complete: ${payload.discovered} discovered, ${payload.notifications} notifications queued`
@@ -110,6 +234,14 @@ export default function Home() {
     } finally {
       setPolling(false);
     }
+  }
+
+  if (!authChecked) {
+    return <LoadingScreen />;
+  }
+
+  if (!user) {
+    return <LoginPage status={status} onSubmit={submitAuth} />;
   }
 
   return (
@@ -128,6 +260,15 @@ export default function Home() {
           <div className="flex items-center gap-2 text-sm text-slate-700">
             <Activity size={17} aria-hidden="true" />
             <span>{status}</span>
+            <span className="hidden text-slate-400 md:inline">|</span>
+            <span className="hidden md:inline">{user.email}</span>
+            <button
+              onClick={signOut}
+              className="focus-ring inline-flex items-center gap-1 rounded border border-line px-2 py-1 text-xs font-medium"
+            >
+              <LogOut size={14} aria-hidden="true" />
+              Sign out
+            </button>
           </div>
         </div>
       </header>
@@ -162,27 +303,47 @@ export default function Home() {
             {lookup ? (
               <>
                 <div>
-                  <div className="mb-2 flex flex-wrap items-center gap-2">
-                    <span className="rounded bg-slate-100 px-2 py-1 text-xs font-semibold uppercase">
-                      {lookup.bill.topic}
-                    </span>
-                    <span className="text-sm text-slate-600">{lookup.bill.status}</span>
+                  <div className="mb-3 flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-normal text-slate-600">
+                    <span className="rounded border border-line bg-white px-2 py-1">{lookup.bill.topic}</span>
+                    <span>{lookup.bill.status}</span>
+                    <span>{lookup.bill.congress_bill_id}</span>
                   </div>
                   <h3 className="text-2xl font-semibold tracking-normal">{lookup.bill.title}</h3>
-                  <p className="mt-2 text-sm leading-6 text-slate-700">{lookup.bill.summary}</p>
+                  <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-700">
+                    {lookup.generated_summary}
+                  </p>
                 </div>
 
-                <div className="grid gap-3 md:grid-cols-3">
-                  <Metric label="Sponsor" value={lookup.bill.sponsor} />
-                  <Metric label="Confidence" value={lookup.confidence} />
-                  <Metric label="Finance signal" value={lookup.finance.confidence ?? "low"} />
+                <div className="grid gap-3 md:grid-cols-[1.35fr_0.65fr_0.65fr]">
+                  <SponsorCard sponsor={lookup.bill.sponsor} />
+                  <SignalCard
+                    icon={<ShieldCheck size={17} aria-hidden="true" />}
+                    label="Source depth"
+                    value={lookup.confidence}
+                  />
+                  <SignalCard
+                    icon={<CircleDollarSign size={17} aria-hidden="true" />}
+                    label="Finance coverage"
+                    value={lookup.finance.confidence ?? "low"}
+                  />
                 </div>
 
                 <section>
-                  <h4 className="mb-2 text-sm font-semibold uppercase text-slate-500">Generated Analysis</h4>
-                  <p className="rounded border border-line bg-panel p-3 text-sm leading-6">
-                    {lookup.generated_analysis}
-                  </p>
+                  <h4 className="mb-2 text-sm font-semibold uppercase text-slate-500">Political Read</h4>
+                  {lookup.analysis_sections && Object.keys(lookup.analysis_sections).length > 0 ? (
+                    <div className="grid gap-2">
+                      {Object.entries(lookup.analysis_sections).map(([title, body]) => (
+                        <section key={title} className="border-t border-line pt-3 first:border-t-0 first:pt-0">
+                          <h5 className="text-sm font-semibold">{title}</h5>
+                          <p className="mt-1 text-sm leading-6 text-slate-700">{body}</p>
+                        </section>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="rounded border border-line bg-panel p-3 text-sm leading-6">
+                      {lookup.generated_analysis}
+                    </p>
+                  )}
                 </section>
 
                 <div className="grid gap-3 md:grid-cols-2">
@@ -230,19 +391,23 @@ export default function Home() {
               <Metric label="Alerts" value="Queued" compact />
             </div>
             <div className="p-4">
-              <h3 className="mb-2 text-sm font-semibold uppercase text-slate-500">Topics</h3>
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <h3 className="text-sm font-semibold uppercase text-slate-500">Alert Topics</h3>
+                <span className="text-xs text-slate-500">Used by Poll</span>
+              </div>
               <div className="flex flex-wrap gap-2">
                 {interests.map((interest) => (
-                  <span
+                  <button
                     key={interest.topic}
-                    className={`rounded border px-2 py-1 text-xs font-medium ${
+                    onClick={() => void toggleInterest(interest)}
+                    className={`focus-ring rounded border px-2 py-1 text-xs font-medium ${
                       interest.enabled
                         ? "border-signal bg-emerald-50 text-signal"
                         : "border-line bg-panel text-slate-500"
                     }`}
                   >
                     {interest.topic}
-                  </span>
+                  </button>
                 ))}
               </div>
             </div>
@@ -274,6 +439,119 @@ export default function Home() {
   );
 }
 
+function authHeaders(token: string) {
+  return {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json"
+  };
+}
+
+function LoadingScreen() {
+  return (
+    <main className="grid min-h-screen place-items-center bg-[#eef1f4] text-ink">
+      <div className="flex items-center gap-2 text-sm text-slate-700">
+        <Loader2 className="animate-spin" size={17} aria-hidden="true" />
+        Loading Civic Pulse
+      </div>
+    </main>
+  );
+}
+
+function LoginPage({
+  status,
+  onSubmit
+}: {
+  status: string;
+  onSubmit: (email: string, password: string, mode: "login" | "register") => Promise<void>;
+}) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmitting(true);
+    try {
+      await onSubmit(email, password, mode);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <main className="grid min-h-screen bg-[#eef1f4] px-5 py-8 text-ink">
+      <section className="mx-auto grid w-full max-w-5xl items-center gap-6 lg:grid-cols-[1fr_0.9fr]">
+        <div>
+          <div className="mb-4 grid h-11 w-11 place-items-center rounded bg-civic text-white">
+            <Radar size={22} aria-hidden="true" />
+          </div>
+          <h1 className="text-3xl font-semibold tracking-normal">Civic Pulse</h1>
+          <p className="mt-3 max-w-xl text-sm leading-6 text-slate-700">
+            Sign in to keep monitoring topics tied to your account. Your bill lookups stay source-grounded,
+            while alert topics become configurable per user instead of global for everyone.
+          </p>
+        </div>
+
+        <form onSubmit={submit} className="rounded border border-line bg-white p-5">
+          <div className="mb-4 flex rounded border border-line bg-panel p-1">
+            <button
+              type="button"
+              onClick={() => setMode("login")}
+              className={`focus-ring flex-1 rounded px-3 py-2 text-sm font-medium ${
+                mode === "login" ? "bg-white text-ink shadow-sm" : "text-slate-600"
+              }`}
+            >
+              Sign in
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("register")}
+              className={`focus-ring flex-1 rounded px-3 py-2 text-sm font-medium ${
+                mode === "register" ? "bg-white text-ink shadow-sm" : "text-slate-600"
+              }`}
+            >
+              Create account
+            </button>
+          </div>
+
+          <label className="block text-sm font-medium">
+            Email
+            <input
+              className="focus-ring mt-1 w-full rounded border border-line px-3 py-2"
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              required
+            />
+          </label>
+
+          <label className="mt-3 block text-sm font-medium">
+            Password
+            <input
+              className="focus-ring mt-1 w-full rounded border border-line px-3 py-2"
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              required
+              minLength={8}
+            />
+          </label>
+
+          <button
+            className="focus-ring mt-4 inline-flex w-full items-center justify-center gap-2 rounded bg-civic px-4 py-2 font-medium text-white disabled:opacity-60"
+            disabled={submitting}
+          >
+            {submitting ? <Loader2 className="animate-spin" size={17} /> : <UserRound size={17} />}
+            {mode === "login" ? "Sign in" : "Create account"}
+          </button>
+          <p className="mt-3 min-h-5 text-sm text-slate-600">{status}</p>
+        </form>
+      </section>
+    </main>
+  );
+}
+
 function Metric({ label, value, compact = false }: { label: string; value: string; compact?: boolean }) {
   return (
     <div className={compact ? "p-3" : "rounded border border-line bg-panel p-3"}>
@@ -283,15 +561,84 @@ function Metric({ label, value, compact = false }: { label: string; value: strin
   );
 }
 
+function SponsorCard({ sponsor }: { sponsor: string }) {
+  const party = parseSponsorParty(sponsor);
+  const color = partyColor(party.code);
+
+  return (
+    <div className="rounded border border-line bg-panel p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-xs font-semibold uppercase text-slate-500">Sponsor</div>
+          <div className="mt-1 break-words text-sm font-semibold">{sponsor}</div>
+        </div>
+        <span className={`inline-flex shrink-0 items-center gap-1 rounded border px-2 py-1 text-xs font-semibold ${color}`}>
+          <UserRound size={13} aria-hidden="true" />
+          {party.label}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function SignalCard({
+  icon,
+  label,
+  value
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="rounded border border-line bg-panel p-3">
+      <div className="flex items-center gap-2 text-xs font-semibold uppercase text-slate-500">
+        {icon}
+        {label}
+      </div>
+      <div className="mt-2 text-sm font-semibold capitalize">{value}</div>
+    </div>
+  );
+}
+
+function parseSponsorParty(sponsor: string): { code: "D" | "R" | "I" | "U"; label: string } {
+  if (sponsor.includes("[D-")) return { code: "D", label: "Democrat" };
+  if (sponsor.includes("[R-")) return { code: "R", label: "Republican" };
+  if (sponsor.includes("[I-")) return { code: "I", label: "Independent" };
+  return { code: "U", label: "Unknown" };
+}
+
+function partyColor(code: "D" | "R" | "I" | "U") {
+  if (code === "D") return "border-blue-200 bg-blue-50 text-blue-700";
+  if (code === "R") return "border-red-200 bg-red-50 text-red-700";
+  if (code === "I") return "border-violet-200 bg-violet-50 text-violet-700";
+  return "border-slate-200 bg-white text-slate-600";
+}
+
 function StakeholderList({ title, items }: { title: string; items: StakeholderInsight[] }) {
   return (
     <section className="rounded border border-line bg-panel p-3">
       <h4 className="mb-2 text-sm font-semibold uppercase text-slate-500">{title}</h4>
+      {items.length === 0 ? (
+        <p className="text-sm leading-6 text-slate-600">
+          No related lobbying disclosure matches found for this lookup.
+        </p>
+      ) : null}
       <ul className="grid gap-2 text-sm">
         {items.map((item, index) => (
-          <li key={`${item.name}-${index}`} className="leading-5">
-            <div className="font-semibold">{item.name}</div>
-            <div className="mt-1 text-xs leading-5 text-slate-600">{item.context}</div>
+          <li key={`${item.name}-${index}`} className="border-t border-line pt-2 leading-5 first:border-t-0 first:pt-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="font-semibold">{item.name}</div>
+              {item.recency ? (
+                <span className="rounded bg-white px-2 py-0.5 text-xs font-medium text-slate-600">
+                  {item.recency}
+                </span>
+              ) : null}
+            </div>
+            <div className="mt-1 text-xs leading-5 text-slate-600">
+              {item.takeaway ?? item.context}
+            </div>
+            {item.relevance ? <div className="mt-1 text-xs leading-5 text-slate-500">{item.relevance}</div> : null}
           </li>
         ))}
       </ul>
