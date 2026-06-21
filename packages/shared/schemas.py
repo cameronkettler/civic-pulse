@@ -118,3 +118,10 @@ class NotificationPayload(BaseModel):
     bill_id: str
     topic: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class RepresentativeMapGeometryResponse(BaseModel):
+    state: str = ""
+    congressional_district: str = ""
+    house_geometry: dict[str, Any] = Field(default_factory=dict)
+    state_geometry: dict[str, Any] = Field(default_factory=dict)
+    warning: str | None = None

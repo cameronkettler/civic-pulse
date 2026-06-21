@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { ArrowLeft, Loader2, Radar, Save, UserRound } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
+import RepresentativeMapCard from "@/components/RepresentativeMapCard";
+import type { RepresentativeMapGeometry } from "@/components/RepresentativeMap";
 
 type AuthUser = {
   id: number;
@@ -51,6 +53,8 @@ export default function ProfilePage() {
   const [status, setStatus] = useState("Loading profile settings");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [mapGeometry, setMapGeometry] = useState<RepresentativeMapGeometry | null>(null);
+  const [mapLoading, setMapLoading] = useState(false);
 
   useEffect(() => {
     void bootstrap();
@@ -88,10 +92,33 @@ export default function ProfilePage() {
       const payload = (await profileResponse.json()) as UserProfile;
       setProfile({ ...emptyProfile, ...payload });
       setStatus(payload.warning ?? "Profile settings loaded");
+      await loadMapGeometry(storedToken);
     } catch {
       setStatus("Could not reach the API.");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadMapGeometry(token: string) {
+    setMapLoading(true);
+
+    try {
+      const response = await fetch(`${apiBase}/api/profile/map-geometry`, {
+        headers: authHeaders(token),
+      });
+
+      if (!response.ok) {
+        setMapGeometry(null);
+        return;
+      }
+
+      const payload = (await response.json()) as RepresentativeMapGeometry;
+      setMapGeometry(payload);
+    } catch {
+      setMapGeometry(null);
+    } finally {
+      setMapLoading(false);
     }
   }
 
@@ -121,6 +148,7 @@ export default function ProfilePage() {
 
       setProfile({ ...emptyProfile, ...(payload as UserProfile) });
       setStatus(payload.warning ?? "Profile location saved");
+      await loadMapGeometry(token);
     } catch {
       setStatus("Could not reach the API.");
     } finally {
@@ -131,6 +159,10 @@ export default function ProfilePage() {
   function updateField(field: keyof UserProfile, value: string) {
     setProfile((current) => ({ ...current, [field]: value }));
   }
+
+  const houseRepresentative = profile.representatives.find(
+    (representative) => representative.chamber === "House"
+  );
 
   return (
     <main className="min-h-screen bg-[#eef1f4] text-ink">
@@ -230,39 +262,83 @@ export default function ProfilePage() {
           </div>
         </form>
 
-        <aside className="rounded border border-line bg-white">
-          <div className="border-b border-line px-4 py-3">
-            <h2 className="text-base font-semibold">Your Representatives</h2>
-            <p className="mt-1 text-sm text-slate-600">
-              {profile.congressional_district
-                ? `${profile.state}-${profile.congressional_district}`
-                : "Save an address to resolve your district."}
-            </p>
-          </div>
-          <div className="divide-y divide-line">
-            {profile.representatives.length === 0 ? (
-              <p className="p-4 text-sm leading-6 text-slate-600">
-                No representatives loaded yet.
+        <div className="space-y-5">
+          <aside className="rounded border border-line bg-white">
+            <div className="border-b border-line px-4 py-3">
+              <h2 className="text-base font-semibold">Your Representatives</h2>
+              <p className="mt-1 text-sm text-slate-600">
+                {profile.congressional_district
+                  ? `${profile.state}-${profile.congressional_district}`
+                  : "Save an address to resolve your district."}
               </p>
-            ) : null}
-            {profile.representatives.map((representative) => (
-              <article key={`${representative.chamber}-${representative.name}`} className="p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <h3 className="text-sm font-semibold">{representative.name}</h3>
-                    <p className="mt-1 text-sm text-slate-600">
-                      {representative.chamber}
-                      {representative.district ? `, District ${representative.district}` : ""}
-                    </p>
+            </div>
+
+            <div className="divide-y divide-line">
+              {profile.representatives.length === 0 ? (
+                <p className="p-4 text-sm leading-6 text-slate-600">
+                  No representatives loaded yet.
+                </p>
+              ) : null}
+
+              {profile.representatives.map((representative) => (
+                <article
+                  key={`${representative.chamber}-${representative.name}`}
+                  className="p-4"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-semibold">
+                        {representative.name}
+                      </h3>
+
+                      <p className="mt-1 text-sm text-slate-600">
+                        {representative.chamber}
+                        {representative.district
+                          ? `, District ${representative.district}`
+                          : ""}
+                      </p>
+                    </div>
+
+                    <span
+                      className={`rounded border px-2 py-1 text-xs font-semibold ${partyColor(
+                        representative.party
+                      )}`}
+                    >
+                      {partyLabel(representative.party)}
+                    </span>
                   </div>
-                  <span className={`rounded border px-2 py-1 text-xs font-semibold ${partyColor(representative.party)}`}>
-                    {partyLabel(representative.party)}
-                  </span>
+                </article>
+              ))}
+            </div>
+          </aside>
+
+          <section className="rounded border border-line bg-white">
+            <div className="border-b border-line px-4 py-3">
+              <h2 className="text-base font-semibold">District Map</h2>
+
+              <p className="mt-1 text-sm text-slate-600">
+                See the congressional district tied to your saved address.
+              </p>
+            </div>
+
+            <div className="p-4">
+              {mapLoading ? (
+                <div className="text-sm text-slate-600">
+                  Loading map...
                 </div>
-              </article>
-            ))}
-          </div>
-        </aside>
+              ) : mapGeometry ? (
+                <RepresentativeMapCard
+                  geometry={mapGeometry}
+                  districtParty={houseRepresentative?.party}
+                />
+              ) : (
+                <div className="text-sm text-slate-600">
+                  Save your address to load your congressional district map.
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
       </section>
     </main>
   );

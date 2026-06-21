@@ -2,7 +2,7 @@ from datetime import datetime
 
 from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-
+from sqlalchemy import JSON, Column, DateTime, Integer, String, Text, func
 
 class Base(DeclarativeBase):
     pass
@@ -34,6 +34,32 @@ class BillMonitoring(Base):
     first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     notification_sent: Mapped[bool] = mapped_column(Boolean, default=False)
 
+
+class RepresentativeSearchCache(Base):
+    __tablename__ = "representative_search_cache"
+
+    id = Column(Integer, primary_key=True)
+    representative_name = Column(String, nullable=False, index=True)
+    bill_id = Column(String, nullable=False, index=True)
+    query = Column(Text, nullable=False)
+    results_json = Column(JSON, nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class BillPositionSearchCache(Base):
+    __tablename__ = "bill_position_search_cache"
+
+    id = Column(Integer, primary_key=True)
+
+    bill_id = Column(String, nullable=False, unique=True, index=True)
+
+    results_json = Column(JSON, nullable=False)
+
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False,
+    )
 
 class User(Base):
     __tablename__ = "users"

@@ -20,12 +20,13 @@ from packages.agents.bill_lookup.input_resolver import BillInputResolutionError
 from packages.agents.bill_lookup.report_generator import OpenAIReportGenerator
 from packages.agents.bill_monitoring import BillMonitoringWorkflow
 from packages.db import get_session
-from packages.db.models import Bill, BillMonitoring, GeneratedReport, User, UserProfile, UserSession, UserTopicPreference
+from packages.db.models import Bill, BillMonitoring, BillPositionSearchCache, GeneratedReport, RepresentativeSearchCache, User, UserProfile, UserSession, UserTopicPreference
 from packages.ingestion.census import CensusGeocoderClient
 from packages.ingestion.congress import CongressClient
 from packages.ingestion.search import SearchResult, SerpApiClient
 from packages.jobs.poll_new_bills import poll_new_bills
 from packages.shared.config import get_settings
+from packages.ingestion.census import CensusGeocoderClient, CensusGeometryClient
 from packages.shared.schemas import (
     BillRecord,
     BillLookupRequest,
@@ -38,6 +39,7 @@ from packages.shared.schemas import (
     RepresentativeRecord,
     SourceReference,
     UserProfileResponse,
+    RepresentativeMapGeometryResponse,
 )
 
 router = APIRouter()
@@ -265,6 +267,7 @@ async def representative_context_lookup(
         cosponsors=cosponsors,
         house_votes=house_votes,
         senate_votes=senate_votes,
+        db=db,
     )
 
 
@@ -367,6 +370,7 @@ async def representative_context_for_bill(
                 house_votes=house_votes,
                 senate_votes=senate_votes,
                 sponsor_name=sponsor_name,
+                db=db,
             )
         )
     return signals
@@ -414,12 +418,14 @@ def names_refer_to_same_person(left: str, right: str) -> bool:
     )
 
 
+# representative_signal_for_bill signature
 async def representative_signal_for_bill(
     *,
     bill: BillRecord,
     representative: RepresentativeRecord,
     cosponsors: list[dict[str, object]],
     house_votes: list[dict[str, object]],
+    db: Session,
     senate_votes: list[dict[str, object]] | None = None,
     sponsor_name: str | None = None,
 ) -> RepresentativeBillSignal:
@@ -447,6 +453,7 @@ async def representative_signal_for_bill(
         representative=representative,
         signal=signal,
         detail=detail,
+        db=db,
     )
     return RepresentativeBillSignal(
         representative=representative,
@@ -552,8 +559,9 @@ async def enrich_representative_position_signal(
     representative: RepresentativeRecord,
     signal: str,
     detail: str,
+    db: Session,
 ) -> tuple[str, str, list[SourceReference], str | None]:
-    search_results = await search_representative_position(bill, representative)
+    search_results = await search_representative_position(bill, representative, db)
     if reported_cosponsor := public_reported_cosponsor_signal(signal, search_results, representative):
         reported_signal, reported_detail, reported_sources = reported_cosponsor
         return reported_signal, reported_detail, reported_sources, None
@@ -745,11 +753,37 @@ def public_position_signal(existing_signal: str, position: str) -> str:
 async def search_representative_position(
     bill: dict[str, object],
     representative: RepresentativeRecord,
+    session: Session,
 ) -> list[SearchResult]:
     bill_id = str(bill.get("congress_bill_id") or "")
-    title = str(bill.get("title") or "")
     rep_name = representative.name
-    queries = representative_position_queries(
+
+    cached = (
+        session.query(RepresentativeSearchCache)
+        .filter(
+            RepresentativeSearchCache.bill_id == bill_id,
+            RepresentativeSearchCache.representative_name == rep_name,
+        )
+        .first()
+    )
+
+    if cached:
+        logger.info(
+            "representative position cache hit",
+            extra={
+                "representative": rep_name,
+                "bill_id": bill_id,
+            },
+        )
+
+        return [
+            SearchResult(**result)
+            for result in cached.results_json
+        ]
+
+    title = str(bill.get("title") or "")
+
+    query = representative_position_query(
         rep_name=rep_name,
         bill_id=bill_id,
         title=title,
@@ -757,47 +791,49 @@ async def search_representative_position(
     )
 
     client = SerpApiClient()
-    results: list[SearchResult] = []
-    seen_links: set[str] = set()
-    for query in queries:
-        query_results = await client.search(query, num=3)
-        logger.info(
-            "representative position search completed",
-            extra={
-                "provider": "SerpAPI",
-                "representative": rep_name,
-                "bill_id": bill_id,
-                "query_results": len(query_results),
-            },
+    query_results = await client.search(
+        query,
+        num=get_settings().rep_position_search_results,
+    )
+
+    ranked_results = ranked_position_search_results(query_results)[
+        : get_settings().rep_position_search_results
+    ]
+
+    session.add(
+        RepresentativeSearchCache(
+            representative_name=rep_name,
+            bill_id=bill_id,
+            query=query,
+            results_json=[r.model_dump() for r in ranked_results],
         )
-        for item in query_results:
-            if item.link in seen_links:
-                continue
-            seen_links.add(item.link)
-            results.append(item)
-    return ranked_position_search_results(results)[: get_settings().rep_position_search_results]
+    )
+    session.commit()
 
+    return ranked_results
 
-def representative_position_queries(
+def representative_position_query(
     *,
     rep_name: str,
     bill_id: str,
     title: str,
     official_url: str | None = None,
-) -> list[str]:
+) -> str:
     bill_number = bill_id.rsplit("-", 1)[0] if bill_id else ""
     official_domain = official_site_domain(official_url)
-    queries = [
-        f'"{rep_name}" "{title}" statement',
-        f'"{rep_name}" "{title}" local news',
+
+    parts = [
+        f'"{rep_name}"',
+        f'"{title}"' if title else "",
+        f'"{bill_id}"' if bill_id else "",
+        f'"{bill_number}"' if bill_number and bill_number != bill_id else "",
+        "statement OR support OR oppose OR vote OR cosponsor OR press release",
     ]
+
     if official_domain:
-        queries.insert(0, f'site:{official_domain} "{title}"')
-    if bill_id:
-        queries.append(f'"{rep_name}" "{bill_id}" statement')
-    if bill_number and bill_number != bill_id:
-        queries.append(f'"{rep_name}" "{bill_number}" statement')
-    return [query for query in queries if '""' not in query]
+        parts.append(f"site:{official_domain} OR congress.gov OR house.gov OR senate.gov")
+
+    return " ".join(part for part in parts if part and '""' not in part)
 
 
 def official_site_domain(official_url: str | None) -> str:
@@ -1068,6 +1104,69 @@ async def representatives_for_profile(profile: UserProfile) -> tuple[list[Repres
         return representatives, "Representative lookup is temporarily unavailable."
     return representatives, None
 
+@router.get("/profile/map-geometry", response_model=RepresentativeMapGeometryResponse)
+async def get_profile_map_geometry(
+    user: User = Depends(current_user),
+    db: Session = Depends(get_session),
+):
+    profile = db.query(UserProfile).filter(UserProfile.user_id == user.id).one_or_none()
+
+    if profile is None:
+        return RepresentativeMapGeometryResponse(
+            warning="Add an address to see your congressional district map."
+        )
+
+    if not profile.state or not profile.congressional_district:
+        return RepresentativeMapGeometryResponse(
+            state=profile.state or "",
+            congressional_district=profile.congressional_district or "",
+            warning="Save a resolved address to see your congressional district map.",
+        )
+
+    client = CensusGeometryClient()
+    warnings: list[str] = []
+
+    try:
+        house_geometry = await client.congressional_district_geometry(
+            state=profile.state,
+            district=profile.congressional_district,
+        )
+    except (httpx.TimeoutException, httpx.HTTPError, ValueError) as exc:
+        logger.warning(
+            "congressional district geometry lookup failed",
+            extra={
+                "endpoint": "/api/profile/map-geometry",
+                "user_id": user.id,
+                "state": profile.state,
+                "district": profile.congressional_district,
+                "error_type": exc.__class__.__name__,
+            },
+        )
+        house_geometry = {"type": "FeatureCollection", "features": []}
+        warnings.append("Could not load congressional district boundary.")
+
+    try:
+        state_geometry = await client.state_geometry(state=profile.state)
+    except (httpx.TimeoutException, httpx.HTTPError, ValueError) as exc:
+        logger.warning(
+            "state geometry lookup failed",
+            extra={
+                "endpoint": "/api/profile/map-geometry",
+                "user_id": user.id,
+                "state": profile.state,
+                "error_type": exc.__class__.__name__,
+            },
+        )
+        state_geometry = {"type": "FeatureCollection", "features": []}
+        warnings.append("Could not load state boundary.")
+
+    return RepresentativeMapGeometryResponse(
+        state=profile.state,
+        congressional_district=profile.congressional_district,
+        house_geometry=house_geometry,
+        state_geometry=state_geometry,
+        warning=" ".join(warnings) if warnings else None,
+    )
 
 @router.post("/monitoring/poll")
 async def poll_monitoring(user: User = Depends(current_user), db: Session = Depends(get_session)):

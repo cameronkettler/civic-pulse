@@ -108,15 +108,45 @@ class CongressClient:
             ]
 
         url = f"{self.base_url}/member/congress/119/{state.upper()}"
+        senators: list[RepresentativeRecord] = []
+
         async with httpx.AsyncClient(timeout=httpx.Timeout(self.settings.congress_api_timeout_seconds)) as client:
-            response = await client.get(url, params={**self._request_params(), "currentMember": "true"})
-            response.raise_for_status()
-            members = response.json().get("members", [])
-        return [
-            representative
-            for member in members
-            if (representative := self._representative_from_member(member, self._member_chamber(member))).chamber == "Senate"
-        ][:2]
+            offset = 0
+
+            while offset < 1000 and len(senators) < 2:
+                response = await client.get(
+                    url,
+                    params={
+                        **self._request_params(),
+                        "currentMember": "true",
+                        "limit": 250,
+                        "offset": offset,
+                    },
+                )
+                response.raise_for_status()
+
+                members = response.json().get("members", [])
+                if not members:
+                    break
+
+                for member in members:
+                    representative = self._representative_from_member(
+                        member,
+                        self._member_chamber(member),
+                    )
+
+                    if representative.chamber == "Senate":
+                        senators.append(representative)
+
+                    if len(senators) == 2:
+                        break
+
+                if len(members) < 250:
+                    break
+
+                offset += 250
+
+        return senators[:2]
 
     async def list_bill_cosponsors(self, bill_id: str) -> list[dict[str, Any]]:
         if not self.settings.congress_api_key:
@@ -366,9 +396,22 @@ class CongressClient:
 
     def _member_chamber(self, member: dict[str, Any]) -> str:
         terms = member.get("terms", {}).get("item", []) if isinstance(member.get("terms"), dict) else []
-        latest = terms[-1] if terms else {}
-        chamber = latest.get("chamber", "")
-        return "Senate" if "Senate" in chamber else "House"
+
+        if not isinstance(terms, list):
+            terms = []
+
+        for term in reversed(terms):
+            chamber = str(term.get("chamber", ""))
+            if "Senate" in chamber:
+                return "Senate"
+            if "House" in chamber or "Representative" in chamber:
+                return "House"
+
+        member_type = str(member.get("type", "") or member.get("memberType", ""))
+        if "Senate" in member_type or "Senator" in member_type:
+            return "Senate"
+
+        return "House"
 
     def _parse_bill_id(self, bill_id: str) -> tuple[str, str, str]:
         normalized = bill_id.lower().replace(".", "").replace(" ", "-")
