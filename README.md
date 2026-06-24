@@ -1,12 +1,13 @@
 # Congress For Normal People
 
-Congress For Normal People is an agentic federal-legislation app that turns bill records into plain-English political context. It combines a Next.js frontend, a FastAPI backend, PostgreSQL persistence, account-scoped monitoring topics, location-based representative lookup, and provider integrations for Congress.gov, OpenFEC, Lobbying Disclosure Act filings, Census geocoding, SerpAPI, and OpenAI.
+Congress For Normal People is an agentic federal-legislation app that turns bill records into plain-English political context. It combines a Next.js frontend, a FastAPI backend, PostgreSQL persistence, account-scoped monitoring topics, location-based representative lookup, and provider integrations for Congress.gov, OpenFEC, Lobbying Disclosure Act filings, Census geocoding, optional SerpAPI, and OpenAI.
 
 The goal is simple: search a bill, understand what it does, see who may care about it, and get representative-specific context without reading a dozen government pages first.
 
 ## Current Features
 
 - Bill lookup by bill number or natural-language bill query.
+- Human-readable bill labels, such as `H.Res. 11 (119th Congress)` and `S.Res. 2 (119th Congress)`, while internal cache/API IDs remain normalized.
 - Plain-language political read with structured sections:
   - what the bill does
   - why supporters want it
@@ -22,9 +23,12 @@ The goal is simple: search a bill, understand what it does, see who may care abo
   - recorded House vote when available
   - public-source search context
   - labeled AI-assisted context
-- Account-scoped alert topics.
-- Recent monitored bills that can be clicked to run a report.
+- Account-scoped watchlist topics.
+- Watchlist topics used for monitoring, plus a separate topic filter for browsing tracked bills.
+- Current-Congress tracked bills that can be clicked to run a report.
 - Scheduled polling endpoint for GitHub Actions or another cron runner.
+- Representative Deep Dive page for member profile context, recent sponsored legislation, campaign-finance coverage, election timing, public themes, and watchlist alignment.
+- About page explaining how to use the application.
 - Graceful handling for slow or unavailable external providers.
 
 ## Tech Stack
@@ -144,6 +148,17 @@ Representative-context search:
 REP_POSITION_SEARCH_RESULTS=5
 ```
 
+Monitoring:
+
+```text
+CONGRESS_CURRENT_CONGRESS=119
+MONITORING_POLL_LIMIT=10
+MONITORING_POLL_MAX_FETCH=50
+MONITORING_TOPICS=Artificial Intelligence,Agriculture,...
+```
+
+`CONGRESS_CURRENT_CONGRESS` constrains monitoring and tracked bills to the active Congress. `MONITORING_POLL_LIMIT` controls the Congress.gov page size, and `MONITORING_POLL_MAX_FETCH` controls how many recent current-Congress bills a poll can review.
+
 Address-to-district lookup uses the public U.S. Census Geocoder and does not require an API key:
 
 ```text
@@ -159,6 +174,8 @@ Timeouts are configurable in `.env.example`, including `CONGRESS_API_TIMEOUT_SEC
 - `POST /api/auth/login` creates a bearer session.
 - `GET /api/auth/me` returns the signed-in account.
 - `POST /api/bills/lookup` runs the bill lookup workflow.
+- `GET /api/bills/lookup/stream` streams bill lookup progress and the final report as NDJSON.
+- `POST /api/bills/representative-context` checks a specific representative against the current bill.
 - `GET /api/monitoring/recent` lists cached recent bills.
 - `POST /api/monitoring/poll` polls for newly introduced bills using the signed-in user's enabled topics.
 - `POST /api/jobs/poll-new-bills` runs the scheduled environment-level poll job.
@@ -166,18 +183,21 @@ Timeouts are configurable in `.env.example`, including `CONGRESS_API_TIMEOUT_SEC
 - `PATCH /api/interests/{topic}` enables or disables one monitoring topic.
 - `GET /api/profile` returns the signed-in user's profile and representatives.
 - `PUT /api/profile/location` resolves an address to a congressional district and representatives.
+- `GET /api/representatives/deep-dive/stream` streams representative deep-dive progress and results.
 
 ## Representative Context
 
-For signed-in users with a saved address, bill reports include a `Your Representative Context` section. The backend first checks official or structured signals such as sponsor, cosponsor, and recorded House votes. It then enriches the section with public search results when SerpAPI is enabled.
+For signed-in users with a saved address, bill reports include a `Your Representative Context` section. The backend first checks official or structured signals such as sponsor, cosponsor, recorded House votes, and recorded Senate votes when available. It then enriches the section with public research through OpenAI web search and optional SerpAPI results.
 
 AI-generated interpretation is returned separately as `ai_context` and displayed in the UI as `AI-assisted context`. That note is meant to explain likely political rationale from the available evidence, not replace official vote or sponsorship data.
 
 ## Monitoring
 
-Alert topics are stored per account in `user_topic_preferences`. The in-app Poll button uses the signed-in user's enabled topics. The scheduled job endpoint uses the environment-level `MONITORING_TOPICS` list and `JOB_TOKEN`.
+Watchlist topics are stored per account in `user_topic_preferences`. The in-app Refresh Bills button uses the signed-in user's enabled topics. The scheduled job endpoint uses the environment-level `MONITORING_TOPICS` list and `JOB_TOKEN`.
 
-Recent bills are cached in the database and shown on the dashboard. Clicking a recent bill runs a fresh lookup report for that bill.
+Tracked bills are cached in the database and shown on the dashboard. The dashboard displays all tracked current-Congress bills by default, with a separate topic filter for browsing. Clicking a tracked bill runs a lookup report for that bill.
+
+Polling uses the configured current Congress endpoint, such as `/bill/119`, instead of the all-Congresses feed. This prevents old metadata updates from surfacing bills from prior Congresses as if they were recent.
 
 ## Deployment
 
@@ -213,4 +233,4 @@ WEB_CORS_ORIGINS=https://your-vercel-app.vercel.app,http://localhost:3000
 
 - Infrastructure names still use `civic-pulse` in a few places, such as package names, local database defaults, storage keys, and existing deployment URLs. Those are intentionally left stable so existing local data and deployments keep working.
 - The API creates tables at startup for this demo-stage project. A production version should add Alembic migrations.
-- The next production steps are durable queues, stronger source citation storage, richer vote ingestion, and background workers for slow report generation.
+- The next production steps are durable queues, stronger source citation storage, richer vote ingestion, migrations, and background workers for slow report generation.

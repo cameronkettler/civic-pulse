@@ -4,13 +4,16 @@ from datetime import datetime, timezone
 
 from apps.api.app.api import routes
 from packages.agents.bill_lookup import ProviderLookupError
-from packages.db.models import Base, ReportCache, RepresentativeDeepDiveCache, User
+from packages.db.models import Base, Bill, ReportCache, RepresentativeDeepDiveCache, User
 from packages.shared.schemas import BillLookupRequest, RepresentativeDeepDiveResponse
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 
 class _EmptyQuery:
+    def filter(self, *_: object):
+        return self
+
     def order_by(self, *_: object):
         return self
 
@@ -40,6 +43,35 @@ def test_recent_bills_returns_warning_without_live_feed(monkeypatch):
     assert response.warning == "No cached bills yet. Run polling to populate recent bills."
 
 
+def test_recent_bills_only_returns_current_congress_rows():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    db.add_all(
+        [
+            Bill(
+                congress_bill_id="hres-118-105",
+                title="Designating minority membership on certain standing committees of the House.",
+                summary="Summary pending.",
+                topic="Uncategorized",
+            ),
+            Bill(
+                congress_bill_id="hr-22-119",
+                title="SAVE Act",
+                summary="Requires documentary proof of citizenship for voter registration.",
+                topic="Technology",
+            ),
+        ]
+    )
+    db.commit()
+
+    response = asyncio.run(routes.recent_bills(db))
+
+    assert [item.congress_bill_id for item in response.items] == ["hr-22-119"]
+    assert response.items[0].topic == "Elections"
+
+
 def test_hot_topics_returns_searchable_bill_prompts():
     response = routes.hot_topics(_EmptyDb())
 
@@ -47,6 +79,46 @@ def test_hot_topics_returns_searchable_bill_prompts():
     assert response.items[0].congress_bill_id == "hr-8800-119"
     assert all(item.title for item in response.items)
     assert all(item.reason for item in response.items)
+
+
+def test_repair_bill_topics_updates_stale_monitoring_labels():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    save_act = Bill(
+        congress_bill_id="hr-22-119",
+        title="SAVE Act",
+        summary="Requires documentary proof of citizenship for voter registration.",
+        topic="Technology",
+    )
+    farm_bill = Bill(
+        congress_bill_id="hr-7567-119",
+        title="Farm, Food, and National Security Act of 2026",
+        summary="Farm bill with food and nutrition programs.",
+        topic="Technology",
+    )
+    db.add_all([save_act, farm_bill])
+    db.commit()
+
+    routes.repair_bill_topics(db, [save_act, farm_bill])
+
+    assert save_act.topic == "Elections"
+    assert farm_bill.topic == "Agriculture"
+
+
+def test_poll_monitoring_returns_structured_error(monkeypatch):
+    async def _failing_poll(*_: object, **__: object):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(routes, "poll_new_bills", _failing_poll)
+    monkeypatch.setattr(routes, "enabled_topics_for_user", lambda *_: {"Defense"})
+    user = User(id=1, email="test@example.com", password_hash="hash")
+
+    response = asyncio.run(routes.poll_monitoring(user=user, db=_EmptyDb()))
+
+    assert response.status_code == 502
+    assert json.loads(response.body)["detail"] == "Watchlist refresh failed while checking recent Congress.gov bills."
 
 
 class _CongressFailureWorkflow:

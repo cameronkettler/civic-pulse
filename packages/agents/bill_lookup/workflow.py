@@ -7,6 +7,7 @@ import httpx
 from packages.ingestion.congress import CongressClient
 from packages.ingestion.fec import FECClient
 from packages.ingestion.lobbying import LobbyingDisclosureClient
+from packages.shared.bills import display_bill_id
 from packages.shared.config import Settings, get_settings
 from packages.shared.schemas import BillLookupResponse, BillRecord, StakeholderInsight
 
@@ -327,7 +328,7 @@ class BillLookupWorkflow:
         bill = state["bill"]
         supporters = ", ".join(item.name for item in state["stakeholders"]["possible_supporters"])
         opponents = ", ".join(item.name for item in state["stakeholders"]["possible_opponents"])
-        summary = f"{bill.congress_bill_id}: {bill.title}. {bill.summary}"
+        summary = f"{display_bill_id(bill.congress_bill_id)}: {bill.title}. {bill.summary}"
         analysis = (
             f"{bill.title} is a {bill.topic} bill currently marked {bill.status}. "
             "The political stakes should be read from the bill summary and status first; finance and "

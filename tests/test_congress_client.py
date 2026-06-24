@@ -59,10 +59,43 @@ class _SuccessfulBillAsyncClient:
                 "bill": {
                     "title": "SAVE Act",
                     "latestAction": {"text": "Received in the Senate."},
-                    "sponsors": [{"fullName": "Rep. Roy, Chip [R-TX-21]"}],
+                    "sponsors": [{"fullName": "Rep. Roy, Chip [R-TX-21]", "bioguideID": "R000614"}],
                     "introducedDate": "2025-01-03",
                     "status": "introduced",
                 }
+            },
+        )
+
+
+class _RecentBillsAsyncClient:
+    last_url: str | None = None
+    last_params: dict[str, object] | None = None
+
+    def __init__(self, **_: object) -> None:
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        return None
+
+    async def get(self, url: str, **kwargs: object) -> httpx.Response:
+        self.__class__.last_url = url
+        self.__class__.last_params = kwargs.get("params")
+        return httpx.Response(
+            200,
+            request=httpx.Request("GET", url),
+            json={
+                "bills": [
+                    {
+                        "congress": 119,
+                        "type": "HR",
+                        "number": "22",
+                        "title": "SAVE Act",
+                        "latestAction": {"text": "Received in the Senate."},
+                    }
+                ]
             },
         )
 
@@ -249,6 +282,20 @@ def test_list_recent_bills_returns_empty_list_when_congress_times_out(monkeypatc
     assert isinstance(_TimeoutAsyncClient.last_timeout, httpx.Timeout)
 
 
+def test_list_recent_bills_uses_current_congress_endpoint(monkeypatch):
+    _RecentBillsAsyncClient.last_url = None
+    _RecentBillsAsyncClient.last_params = None
+    monkeypatch.setattr(httpx, "AsyncClient", _RecentBillsAsyncClient)
+
+    result = asyncio.run(
+        CongressClient(Settings(congress_api_key="test-key", congress_current_congress=119)).list_recent_bills()
+    )
+
+    assert _RecentBillsAsyncClient.last_url == "https://api.congress.gov/v3/bill/119"
+    assert _RecentBillsAsyncClient.last_params["offset"] == 0
+    assert result[0].congress_bill_id == "hr-22-119"
+
+
 def test_get_bill_uses_configured_five_minute_timeout(monkeypatch):
     _SuccessfulBillAsyncClient.last_timeout = None
     monkeypatch.setattr(httpx, "AsyncClient", _SuccessfulBillAsyncClient)
@@ -261,6 +308,8 @@ def test_get_bill_uses_configured_five_minute_timeout(monkeypatch):
 
     assert bill.title == "SAVE Act"
     assert "documentary proof of U.S. citizenship" in bill.summary
+    assert bill.sponsor_bioguide_id == "R000614"
+    assert bill.sponsor_photo_url == "https://www.congress.gov/img/member/r000614_200.jpg"
     assert isinstance(_SuccessfulBillAsyncClient.last_timeout, httpx.Timeout)
     assert _SuccessfulBillAsyncClient.last_timeout.connect == 300
 

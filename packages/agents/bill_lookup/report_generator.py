@@ -3,6 +3,7 @@ from typing import Any
 
 import httpx
 
+from packages.shared.bills import display_bill_id
 from packages.shared.config import Settings, get_settings
 
 
@@ -195,7 +196,10 @@ class OpenAIReportGenerator:
                                 "Treat lobbying disclosure matches as context, not support or opposition, unless a filing directly states a position.",
                                 "Keep each analysis section to 2-4 sentences.",
                             ],
-                            "bill": state["bill"].model_dump(mode="json"),
+                            "bill": {
+                                **state["bill"].model_dump(mode="json"),
+                                "display_id": display_bill_id(state["bill"].congress_bill_id),
+                            },
                             "sponsor": state.get("sponsor", {}),
                             "finance": state.get("finance", {}),
                             "lobbying": state.get("lobbying", {}),

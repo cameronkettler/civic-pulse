@@ -34,6 +34,7 @@ class CongressClient:
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
+        self.last_recent_error: str | None = None
 
     async def get_bill(self, bill_id: str) -> BillRecord:
         if not self.settings.congress_api_key:
@@ -51,9 +52,9 @@ class CongressClient:
 
         title = payload.get("title") or payload.get("shortTitle") or f"{bill_type.upper()} {number}"
         latest_action = (payload.get("latestAction") or {}).get("text", "No latest action available")
-        sponsor_payload = (payload.get("sponsors") or [{}])[0]
+        sponsor_payload = self._first_item(payload.get("sponsors")) or {}
         sponsor = sponsor_payload.get("fullName", "Unknown sponsor")
-        sponsor_bioguide_id = sponsor_payload.get("bioguideId")
+        sponsor_bioguide_id = self._bioguide_id(sponsor_payload)
         introduced = payload.get("introducedDate")
         introduced_date = date.fromisoformat(introduced) if introduced else None
 
@@ -338,11 +339,13 @@ class CongressClient:
                 }
         return None
 
-    async def list_recent_bills(self, limit: int = 10) -> list[BillRecord]:
+    async def list_recent_bills(self, limit: int = 10, offset: int = 0) -> list[BillRecord]:
+        self.last_recent_error = None
         if not self.settings.congress_api_key:
-            return [self._demo_bill(f"hr-{1200 + index}-119") for index in range(1, limit + 1)]
+            return [self._demo_bill(f"hr-{1200 + index}-119") for index in range(offset + 1, offset + limit + 1)]
 
-        url = f"{self.base_url}/bill"
+        current_congress = self.settings.congress_current_congress
+        url = f"{self.base_url}/bill/{current_congress}"
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(self.settings.congress_recent_api_timeout_seconds)
@@ -354,16 +357,21 @@ class CongressClient:
                         "format": "json",
                         "sort": "updateDate+desc",
                         "limit": limit,
+                        "offset": offset,
                     },
                 )
                 response.raise_for_status()
                 bills = response.json().get("bills", [])
-        except (httpx.TimeoutException, httpx.HTTPError):
+        except httpx.TimeoutException:
+            self.last_recent_error = "Congress.gov recent bill feed timed out."
+            return []
+        except httpx.HTTPError:
+            self.last_recent_error = "Congress.gov recent bill feed unavailable."
             return []
 
         records: list[BillRecord] = []
         for item in bills:
-            congress = item.get("congress")
+            congress = item.get("congress") or current_congress
             bill_type = item.get("type", "").lower()
             number = item.get("number")
             records.append(
@@ -446,10 +454,29 @@ class CongressClient:
             party=member.get("partyName") or latest_term.get("partyName") or "Unknown",
             state=member.get("state") or latest_term.get("stateCode") or "",
             district=str(member.get("district") or latest_term.get("district") or "") or None,
-            bioguide_id=member.get("bioguideId"),
+            bioguide_id=self._bioguide_id(member),
             official_url=member.get("officialUrl"),
-            photo_url=self._member_photo_url(member.get("bioguideId")),
+            photo_url=self._member_photo_url(self._bioguide_id(member)),
         )
+
+    def _first_item(self, value: Any) -> dict[str, Any] | None:
+        if isinstance(value, list) and value:
+            item = value[0]
+            return item if isinstance(item, dict) else None
+        if isinstance(value, dict):
+            items = value.get("item")
+            if isinstance(items, list) and items:
+                item = items[0]
+                return item if isinstance(item, dict) else None
+            return value
+        return None
+
+    def _bioguide_id(self, payload: dict[str, Any]) -> str | None:
+        for key in ("bioguideId", "bioguideID", "bioguide_id", "bioguide"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
 
     def _member_photo_url(self, bioguide_id: Any) -> str | None:
         if not isinstance(bioguide_id, str) or not bioguide_id.strip():

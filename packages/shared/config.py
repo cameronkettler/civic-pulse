@@ -9,6 +9,7 @@ from packages.shared.topics import DEFAULT_MONITORING_TOPICS
 class Settings(BaseSettings):
     database_url: str = "sqlite:///./civic_pulse.db"
     congress_api_key: str | None = None
+    congress_current_congress: int = 119
     congress_api_timeout_seconds: float = 300.0
     congress_recent_api_timeout_seconds: float = 30.0
     fec_api_key: str | None = None
@@ -32,6 +33,7 @@ class Settings(BaseSettings):
     rep_position_search_results: int = 5
     monitoring_topics: str = DEFAULT_MONITORING_TOPICS
     monitoring_poll_limit: int = 10
+    monitoring_poll_max_fetch: int = 50
     job_token: str | None = None
     session_token_bytes: int = 32
     password_hash_iterations: int = 210000

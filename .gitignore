@@ -15,3 +15,4 @@ coverage/
 postgres-data/
 *.db
 *.log
+docs/architecture/technical-overview.md

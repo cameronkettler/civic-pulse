@@ -626,8 +626,16 @@ def log_lookup_failure(bill_query: str, provider: str, exc: Exception) -> None:
 
 @router.get("/monitoring/recent", response_model=MonitoringRecentResponse)
 async def recent_bills(db: Session = Depends(get_session)):
-    rows = db.query(Bill).order_by(Bill.created_at.desc()).limit(25).all()
+    settings = get_settings()
+    rows = (
+        db.query(Bill)
+        .filter(Bill.congress_bill_id.like(f"%-{settings.congress_current_congress}"))
+        .order_by(Bill.created_at.desc())
+        .limit(25)
+        .all()
+    )
     if rows:
+        repair_bill_topics(db, rows)
         return MonitoringRecentResponse(items=monitoring_bill_rows(rows))
 
     warning = "No cached bills yet. Run polling to populate recent bills."
@@ -640,9 +648,16 @@ async def recent_bills(db: Session = Depends(get_session)):
 
 @router.get("/monitoring/hot-topics", response_model=HotTopicsResponse)
 def hot_topics(db: Session = Depends(get_session)):
+    settings = get_settings()
     items = list(HOT_TOPIC_BILLS)
     seen = {item.congress_bill_id for item in items}
-    rows = db.query(Bill).order_by(Bill.created_at.desc()).limit(25).all()
+    rows = (
+        db.query(Bill)
+        .filter(Bill.congress_bill_id.like(f"%-{settings.congress_current_congress}"))
+        .order_by(Bill.created_at.desc())
+        .limit(25)
+        .all()
+    )
     for row in rows:
         if row.congress_bill_id in seen or not is_hot_topic_candidate(row):
             continue
@@ -1506,6 +1521,18 @@ def monitoring_bill_rows(rows: list[Bill]) -> list[MonitoringBill]:
     ]
 
 
+def repair_bill_topics(db: Session, rows: list[Bill]) -> None:
+    congress = CongressClient()
+    changed = False
+    for row in rows:
+        repaired_topic = congress.classify_topic(f"{row.title} {row.summary}")
+        if repaired_topic != "Uncategorized" and repaired_topic != row.topic:
+            row.topic = repaired_topic
+            changed = True
+    if changed:
+        db.commit()
+
+
 @router.get("/profile", response_model=UserProfileResponse)
 async def get_profile(user: User = Depends(current_user), db: Session = Depends(get_session)):
     profile = db.query(UserProfile).filter(UserProfile.user_id == user.id).one_or_none()
@@ -1675,13 +1702,30 @@ async def get_profile_map_geometry(
 @router.post("/monitoring/poll")
 async def poll_monitoring(user: User = Depends(current_user), db: Session = Depends(get_session)):
     topics = enabled_topics_for_user(db, user)
-    result = await poll_new_bills(
-        db=db,
-        workflow=BillMonitoringWorkflow(monitored_topics=topics, email_to=user.email),
-        monitored_topics=topics,
-        email_to=user.email,
-    )
-    return result
+    try:
+        result = await poll_new_bills(
+            db=db,
+            workflow=BillMonitoringWorkflow(monitored_topics=topics, email_to=user.email),
+            monitored_topics=topics,
+            email_to=user.email,
+        )
+        return result
+    except Exception as exc:
+        logger.exception(
+            "watchlist poll failed",
+            extra={
+                "endpoint": "/api/monitoring/poll",
+                "user_id": user.id,
+                "error_type": exc.__class__.__name__,
+            },
+        )
+        return JSONResponse(
+            status_code=502,
+            content={
+                "detail": "Watchlist refresh failed while checking recent Congress.gov bills.",
+                "provider": "Congress.gov",
+            },
+        )
 
 
 @router.post("/jobs/poll-new-bills")
@@ -1692,8 +1736,24 @@ async def poll_monitoring_job(
     settings = get_settings()
     if settings.job_token and x_job_token != settings.job_token:
         raise HTTPException(status_code=401, detail="Invalid job token.")
-    result = await poll_new_bills(db=db, workflow=BillMonitoringWorkflow())
-    return result
+    try:
+        result = await poll_new_bills(db=db, workflow=BillMonitoringWorkflow())
+        return result
+    except Exception as exc:
+        logger.exception(
+            "scheduled poll failed",
+            extra={
+                "endpoint": "/api/jobs/poll-new-bills",
+                "error_type": exc.__class__.__name__,
+            },
+        )
+        return JSONResponse(
+            status_code=502,
+            content={
+                "detail": "Scheduled poll failed while checking recent Congress.gov bills.",
+                "provider": "Congress.gov",
+            },
+        )
 
 
 @router.get("/interests")

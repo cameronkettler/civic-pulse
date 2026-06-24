@@ -9,6 +9,7 @@ import {
   CircleDollarSign,
   FileSearch,
   Flame,
+  Info,
   LogOut,
   Loader2,
   Plus,
@@ -114,6 +115,18 @@ type MonitoringRecentResponse = {
   warning?: string | null;
 };
 
+type PollResponse = {
+  fetched?: number;
+  already_seen?: number;
+  discovered: number;
+  processed?: number;
+  matched_topics?: number;
+  notifications?: number;
+  warning?: string | null;
+  detail?: string;
+  provider?: string;
+};
+
 type Interest = {
   id: number;
   topic: string;
@@ -176,6 +189,59 @@ const tokenStorageKey = "civic-pulse-token";
 const lastLookupStorageKey = "civic-pulse-last-lookup";
 const previousLookupsStorageKey = "civic-pulse-previous-lookups";
 
+const billTypeLabels: Record<string, string> = {
+  hr: "H.R.",
+  hres: "H.Res.",
+  hjres: "H.J.Res.",
+  hconres: "H.Con.Res.",
+  s: "S.",
+  sres: "S.Res.",
+  sjres: "S.J.Res.",
+  sconres: "S.Con.Res."
+};
+
+function formatBillId(billId: string) {
+  const match = billId.toLowerCase().match(/^([a-z]+)-(\d+)-(\d+)$/);
+  if (!match) return billId;
+  const [, type, number, congress] = match;
+  return `${billTypeLabels[type] ?? type.toUpperCase()} ${Number(number)} (${ordinal(Number(congress))} Congress)`;
+}
+
+function ordinal(value: number) {
+  if (value % 100 >= 10 && value % 100 <= 20) return `${value}th`;
+  const suffix = value % 10 === 1 ? "st" : value % 10 === 2 ? "nd" : value % 10 === 3 ? "rd" : "th";
+  return `${value}${suffix}`;
+}
+
+function pollStatusMessage(payload: PollResponse) {
+  if (payload.warning) {
+    return payload.warning;
+  }
+
+  const fetched = payload.fetched ?? 0;
+  const alreadySeen = payload.already_seen ?? 0;
+  const discovered = payload.discovered ?? 0;
+  const matchedTopics = payload.matched_topics ?? payload.notifications ?? 0;
+
+  if (fetched === 0) {
+    return "Watchlist checked. Congress.gov returned no recent bills for this poll window.";
+  }
+
+  if (discovered === 0 && alreadySeen > 0) {
+    return `Watchlist checked. The ${alreadySeen} recent bills reviewed from Congress.gov are already being tracked, so there was nothing new to add.`;
+  }
+
+  if (discovered === 0) {
+    return "Watchlist checked. No new matching bills found.";
+  }
+
+  if (matchedTopics === 0) {
+    return `Watchlist checked. ${discovered} new bills found, but none matched your active topics.`;
+  }
+
+  return `Watchlist refreshed. ${discovered} new bills found; ${matchedTopics} matched your active topics.`;
+}
+
 export default function Home() {
   const [billId, setBillId] = useState("");
   const [authToken, setAuthToken] = useState<string | null>(null);
@@ -192,6 +258,8 @@ export default function Home() {
   const [representativeChecking, setRepresentativeChecking] = useState(false);
   const [newTopic, setNewTopic] = useState("");
   const [status, setStatus] = useState("Ready");
+  const [watchlistStatus, setWatchlistStatus] = useState<string | null>(null);
+  const [watchlistTopicFilter, setWatchlistTopicFilter] = useState("All topics");
   const [lookupProgress, setLookupProgress] = useState<LookupProgress[]>([]);
   const [previousLookups, setPreviousLookups] = useState<PreviousLookup[]>([]);
 
@@ -200,16 +268,20 @@ export default function Home() {
   }, []);
 
   const enabledCount = useMemo(() => interests.filter((item) => item.enabled).length, [interests]);
-  const enabledTopics = useMemo(
-    () => new Set(interests.filter((item) => item.enabled).map((item) => item.topic.toLowerCase())),
-    [interests]
+  const savedBillTopicOptions = useMemo(
+    () => Array.from(new Set(watchlistBills.map((bill) => bill.topic).filter(Boolean))).sort(),
+    [watchlistBills]
   );
   const visibleWatchlistBills = useMemo(
     () =>
       watchlistBills
-        .filter((bill) => enabledTopics.size === 0 || enabledTopics.has(bill.topic.toLowerCase()))
+        .filter((bill) => watchlistTopicFilter === "All topics" || bill.topic === watchlistTopicFilter)
         .slice(0, 5),
-    [watchlistBills, enabledTopics]
+    [watchlistBills, watchlistTopicFilter]
+  );
+  const filteredWatchlistBillCount = useMemo(
+    () => watchlistBills.filter((bill) => watchlistTopicFilter === "All topics" || bill.topic === watchlistTopicFilter).length,
+    [watchlistBills, watchlistTopicFilter]
   );
 
   async function bootstrap() {
@@ -609,18 +681,26 @@ export default function Home() {
   async function pollBills() {
     if (!authToken) return;
     setPolling(true);
-    setStatus("Polling Congress.gov feed");
+    setWatchlistStatus("Checking Congress.gov for bills tied to your active topics.");
     try {
       const response = await fetch(`${apiBase}/api/monitoring/poll`, {
         method: "POST",
         headers: authHeaders(authToken)
       });
-      const payload = await response.json();
-      setStatus(
-        `Watchlist refreshed: ${payload.discovered} new bills found`
-      );
+      const payload = (await response.json().catch(() => null)) as PollResponse | null;
+      if (!response.ok) {
+        setWatchlistStatus(payload?.detail ?? `Watchlist refresh failed with HTTP ${response.status}.`);
+        return;
+      }
+      if (!payload) {
+        setWatchlistStatus("Watchlist refresh returned an unreadable response.");
+        return;
+      }
+      setWatchlistStatus(pollStatusMessage(payload));
       await loadWatchlistBills();
       await loadHotTopics();
+    } catch {
+      setWatchlistStatus("Could not refresh your watchlist right now.");
     } finally {
       setPolling(false);
     }
@@ -653,20 +733,27 @@ export default function Home() {
             <span className="hidden text-slate-400 md:inline">|</span>
             <span className="hidden md:inline">{user.email}</span>
             <Link
+              href="/about"
+              className="focus-ring inline-flex h-8 items-center gap-1.5 rounded border border-line px-2 text-xs font-medium text-slate-700"
+            >
+              <Info size={14} aria-hidden="true" />
+              About
+            </Link>
+            <Link
               href="/representatives"
-              className="focus-ring grid h-8 w-8 place-items-center rounded border border-line text-slate-700"
-              aria-label="Representative deep dive"
+              className="focus-ring inline-flex h-8 items-center gap-1.5 rounded border border-line px-2 text-xs font-medium text-slate-700"
               title="Representative deep dive"
             >
-              <BrainCircuit size={15} aria-hidden="true" />
+              <BrainCircuit size={14} aria-hidden="true" />
+              Deep Dive
             </Link>
             <Link
               href="/profile"
-              className="focus-ring grid h-8 w-8 place-items-center rounded border border-line text-slate-700"
-              aria-label="Profile settings"
+              className="focus-ring inline-flex h-8 items-center gap-1.5 rounded border border-line px-2 text-xs font-medium text-slate-700"
               title="Profile settings"
             >
-              <UserRound size={15} aria-hidden="true" />
+              <UserRound size={14} aria-hidden="true" />
+              Profile
             </Link>
             <button
               onClick={signOut}
@@ -717,7 +804,7 @@ export default function Home() {
                   <div className="mb-3 flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-normal text-slate-600">
                     <span className="rounded border border-line bg-white px-2 py-1">{lookup.bill.topic}</span>
                     <span>{lookup.bill.status}</span>
-                    <span>{lookup.bill.congress_bill_id}</span>
+                    <span>{formatBillId(lookup.bill.congress_bill_id)}</span>
                   </div>
                   <h3 className="text-2xl font-semibold tracking-normal">{lookup.bill.title}</h3>
                   <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-700">
@@ -793,8 +880,14 @@ export default function Home() {
             interests={interests}
             enabledCount={enabledCount}
             bills={visibleWatchlistBills}
+            totalSavedBills={watchlistBills.length}
+            filteredBillCount={filteredWatchlistBillCount}
+            topicOptions={savedBillTopicOptions}
+            topicFilter={watchlistTopicFilter}
             newTopic={newTopic}
             polling={polling}
+            refreshStatus={watchlistStatus}
+            onTopicFilterChange={setWatchlistTopicFilter}
             onNewTopicChange={setNewTopic}
             onAddInterest={addInterest}
             onToggleInterest={toggleInterest}
@@ -1004,8 +1097,14 @@ function WatchlistCard({
   interests,
   enabledCount,
   bills,
+  totalSavedBills,
+  filteredBillCount,
+  topicOptions,
+  topicFilter,
   newTopic,
   polling,
+  refreshStatus,
+  onTopicFilterChange,
   onNewTopicChange,
   onAddInterest,
   onToggleInterest,
@@ -1015,8 +1114,14 @@ function WatchlistCard({
   interests: Interest[];
   enabledCount: number;
   bills: MonitoringBill[];
+  totalSavedBills: number;
+  filteredBillCount: number;
+  topicOptions: string[];
+  topicFilter: string;
   newTopic: string;
   polling: boolean;
+  refreshStatus: string | null;
+  onTopicFilterChange: (value: string) => void;
   onNewTopicChange: (value: string) => void;
   onAddInterest: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   onToggleInterest: (interest: Interest) => Promise<void>;
@@ -1042,12 +1147,17 @@ function WatchlistCard({
       <div className="p-4">
         <div className="mb-3 flex items-center justify-between gap-3">
           <p className="text-sm leading-6 text-slate-600">
-            Topics used to shape your in-app briefing and bill monitoring.
+            Monitoring topics tell Refresh Bills what to look for.
           </p>
           <span className="shrink-0 rounded border border-line bg-panel px-2 py-1 text-xs font-semibold">
-            {enabledCount} active
+            {enabledCount} monitoring topics
           </span>
         </div>
+        {refreshStatus ? (
+          <p className="mb-3 rounded border border-line bg-panel px-3 py-2 text-sm leading-5 text-slate-700">
+            {refreshStatus}
+          </p>
+        ) : null}
         <form onSubmit={onAddInterest} className="mb-3 flex gap-2">
           <input
             className="focus-ring min-w-0 flex-1 rounded border border-line px-3 py-2 text-sm"
@@ -1079,14 +1189,35 @@ function WatchlistCard({
           ))}
         </div>
         <div className="mt-4 border-t border-line pt-3">
-          <div className="mb-2 flex items-center justify-between gap-3">
-            <h3 className="text-sm font-semibold uppercase text-slate-500">Watchlist Bills</h3>
-            <span className="text-xs text-slate-500">{bills.length} shown</span>
+          <div className="mb-3 grid gap-2">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-sm font-semibold uppercase text-slate-500">Watchlist Bills</h3>
+              <span className="text-xs text-slate-500">
+                {topicFilter === "All topics"
+                  ? `Showing ${bills.length} of ${totalSavedBills} tracked bills`
+                  : `Showing ${bills.length} of ${filteredBillCount} tracked bills for ${topicFilter} · ${totalSavedBills} total`}
+              </span>
+            </div>
+            <label className="grid gap-1 text-xs font-medium text-slate-600">
+              Topic filter
+              <select
+                className="focus-ring w-full rounded border border-line bg-white px-3 py-2 text-sm text-ink"
+                value={topicFilter}
+                onChange={(event) => onTopicFilterChange(event.target.value)}
+              >
+                <option>All topics</option>
+                {topicOptions.map((topic) => (
+                  <option key={topic}>{topic}</option>
+                ))}
+              </select>
+            </label>
           </div>
           <div className="grid gap-2">
             {bills.length === 0 ? (
               <p className="text-sm leading-6 text-slate-600">
-                No matching bills are saved yet. Refresh Bills checks for newly introduced bills tied to your active topics.
+                {totalSavedBills > 0
+                  ? "Tracked bills exist, but none match this display filter. Choose All topics to browse everything being tracked."
+                  : "No watchlist bills are being tracked yet. Refresh Bills checks Congress.gov and adds newly surfaced bills to this list."}
               </p>
             ) : null}
             {bills.map((bill) => (
@@ -1097,7 +1228,7 @@ function WatchlistCard({
                 className="focus-ring rounded border border-line bg-panel p-3 text-left transition hover:bg-white"
               >
                 <div className="mb-1 flex flex-wrap items-center gap-2">
-                  <span className="text-xs font-semibold uppercase text-civic">{bill.congress_bill_id}</span>
+                  <span className="text-xs font-semibold uppercase text-civic">{formatBillId(bill.congress_bill_id)}</span>
                   <span className="rounded bg-white px-2 py-0.5 text-xs">{bill.topic}</span>
                 </div>
                 <h4 className="text-sm font-semibold leading-5">{bill.title}</h4>
@@ -1141,7 +1272,7 @@ function PreviousLookupsCard({
             className="focus-ring block w-full p-4 text-left transition hover:bg-panel"
           >
             <div className="mb-1 flex items-center justify-between gap-3">
-              <span className="text-xs font-semibold uppercase text-civic">{item.congress_bill_id}</span>
+              <span className="text-xs font-semibold uppercase text-civic">{formatBillId(item.congress_bill_id)}</span>
               <span className="rounded bg-slate-100 px-2 py-0.5 text-xs">{item.topic}</span>
             </div>
             <h3 className="text-sm font-semibold leading-5">{item.title}</h3>
@@ -1407,7 +1538,7 @@ function HotTopicsCard({
           >
             <div className="mb-1 flex flex-wrap items-center gap-2">
               <span className="text-xs font-semibold uppercase text-civic">
-                {item.congress_bill_id}
+                {formatBillId(item.congress_bill_id)}
               </span>
               <span className="rounded bg-slate-100 px-2 py-0.5 text-xs">{item.topic}</span>
               <span className="text-xs text-slate-500">{item.year}</span>

@@ -34,11 +34,14 @@ Environment variables:
 DATABASE_URL=postgresql+psycopg://...
 WEB_CORS_ORIGINS=https://your-vercel-app.vercel.app,http://localhost:3000
 CONGRESS_API_KEY=
+CONGRESS_CURRENT_CONGRESS=119
 FEC_API_KEY=
 LOBBYING_DISCLOSURE_API_KEY=
 LOBBYING_API_LIVE=true
 OPENAI_API_KEY=
 OPENAI_API_LIVE=true
+MONITORING_POLL_LIMIT=10
+MONITORING_POLL_MAX_FETCH=50
 JOB_TOKEN=<long random token>
 ```
 
@@ -83,6 +86,8 @@ Add repository secrets:
 CIVIC_PULSE_API_BASE_URL=https://your-render-api.onrender.com
 CIVIC_PULSE_JOB_TOKEN=<same value as Render JOB_TOKEN>
 ```
+
+`CIVIC_PULSE_API_BASE_URL` must include the scheme and host, for example `https://civic-pulse-bzv1.onrender.com`. Do not set it to only a path, and do not leave it blank. If this secret is missing, the workflow's `curl` command fails with `URL rejected: No host part in the URL`.
 
 The workflow in `.github/workflows/poll-new-bills.yml` runs every morning at 13:00 UTC and can also be triggered manually.
 

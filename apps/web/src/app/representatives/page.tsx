@@ -243,11 +243,11 @@ export default function RepresentativesPage() {
           <div className="flex items-center gap-2">
             <Link
               href="/profile"
-              className="focus-ring grid h-8 w-8 place-items-center rounded border border-line text-slate-700"
-              aria-label="Profile settings"
+              className="focus-ring inline-flex items-center gap-2 rounded border border-line px-3 py-2 text-sm font-medium text-slate-700"
               title="Profile settings"
             >
               <UserRound size={15} aria-hidden="true" />
+              Profile
             </Link>
             <Link
               href="/"

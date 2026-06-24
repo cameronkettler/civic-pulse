@@ -12,8 +12,21 @@ jobs:
 
     steps:
       - name: Poll Civic Pulse API
+        env:
+          CIVIC_PULSE_API_BASE_URL: ${{ secrets.CIVIC_PULSE_API_BASE_URL }}
+          CIVIC_PULSE_JOB_TOKEN: ${{ secrets.CIVIC_PULSE_JOB_TOKEN }}
         run: |
+          if [ -z "$CIVIC_PULSE_API_BASE_URL" ]; then
+            echo "Missing GitHub Actions secret: CIVIC_PULSE_API_BASE_URL"
+            exit 1
+          fi
+
+          if [ -z "$CIVIC_PULSE_JOB_TOKEN" ]; then
+            echo "Missing GitHub Actions secret: CIVIC_PULSE_JOB_TOKEN"
+            exit 1
+          fi
+
           curl --fail --show-error --silent \
             --request POST \
-            --header "X-Job-Token: ${{ secrets.CIVIC_PULSE_JOB_TOKEN }}" \
-            "${{ secrets.CIVIC_PULSE_API_BASE_URL }}/api/jobs/poll-new-bills"
+            --header "X-Job-Token: $CIVIC_PULSE_JOB_TOKEN" \
+            "${CIVIC_PULSE_API_BASE_URL%/}/api/jobs/poll-new-bills"

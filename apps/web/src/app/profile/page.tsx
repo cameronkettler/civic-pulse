@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowLeft, Loader2, Radar, Save, UserRound } from "lucide-react";
+import { ArrowLeft, BrainCircuit, Loader2, Radar, Save, UserRound } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 import RepresentativeMapCard from "@/components/RepresentativeMapCard";
 import type { RepresentativeMapGeometry } from "@/components/RepresentativeMap";
@@ -179,13 +179,22 @@ export default function ProfilePage() {
               <p className="text-sm text-slate-600">{user?.email ?? status}</p>
             </div>
           </div>
-          <Link
-            href="/"
-            className="focus-ring inline-flex items-center gap-2 rounded border border-line px-3 py-2 text-sm font-medium"
-          >
-            <ArrowLeft size={15} aria-hidden="true" />
-            Dashboard
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/representatives"
+              className="focus-ring inline-flex items-center gap-2 rounded border border-line px-3 py-2 text-sm font-medium"
+            >
+              <BrainCircuit size={15} aria-hidden="true" />
+              Deep Dive
+            </Link>
+            <Link
+              href="/"
+              className="focus-ring inline-flex items-center gap-2 rounded border border-line px-3 py-2 text-sm font-medium"
+            >
+              <ArrowLeft size={15} aria-hidden="true" />
+              Dashboard
+            </Link>
+          </div>
         </div>
       </header>
 
